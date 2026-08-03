@@ -329,7 +329,10 @@ const BETTING = /\b(draftkings|dk\*|fanduel|betfair|betmgm|caesars ?(sports|pala
 const P2P = /\b(zelle|venmo|cash ?app|quickpay|interac|e-?transfer)\b/i;
 // Brokerage / robo-advisor / crypto / investing apps -> "Investment" (money moved to an asset,
 // not spending). Named apps are guaranteed here; the LLM catches other investing apps dynamically.
-const INVESTING = /\b(robinhood|webull|wealthsimple|alinea|e\*?trade|etrade|m1 finance|public app|stash|acorns|betterment|wealthfront|vanguard|fidelity|schwab|questrade|ameritrade|interactive brokers|ibkr|sofi invest|coinbase|crypto\.?com|kraken|binance|gemini|blockfi|brokerage|securities|\binvest)\b/i;
+// Prefix matchers (no trailing \b) — bank strings glue brands to more text ("APEXTRADERFUNDING", "...INVESTMENTS").
+const INVESTING = /\b(robinhood|webull|wealthsimple|alinea|e\*?trade|etrade|m1 finance|stash|acorns|betterment|wealthfront|vanguard|fidelity|schwab|questrade|ameritrade|interactive brokers|ibkr|sofi invest|coinbase|crypto|kraken|binance|gemini|blockfi|brokerage|securities|invest)/i;
+// Futures/forex prop-trading firms (evaluation & funding fees) — a trading cost, its own category.
+const PROP_TRADING = /\b(apex[ -]?trader|alpha[ -]?futures|topstep|tradovate|ftmo|funded[ -]?trader|earn2trade|my[ -]?forex[ -]?funds|fundednext|e8[ -]?(funding|markets)|leeloo|uprofit|bulenox|take[ -]?profit[ -]?trader|myfundedfx|blue[ -]?guardian|prop[ -]?firm|prop[ -]?trading)/i;
 
 /** Returns a definite classification, or null to let the LLM decide the category. */
 function ruleClassify(r: RawRow): { excluded: boolean; type: 'expense'|'income'; category: string; reason: string } | null {
@@ -344,6 +347,7 @@ function ruleClassify(r: RawRow): { excluded: boolean; type: 'expense'|'income';
   if (PAYMENT.test(d) && (r.direction === 'in' || ISSUERS.test(d))) {
     return { excluded: true, type: r.direction === 'in' ? 'income' : 'expense', category: 'Transfer', reason: 'card payment' };
   }
+  if (PROP_TRADING.test(d)) return { excluded: false, type: r.direction === 'in' ? 'income' : 'expense', category: 'Prop Trading', reason: 'prop trading' };
   if (INVESTING.test(d)) return { excluded: true, type: r.direction === 'in' ? 'income' : 'expense', category: 'Investment', reason: 'investing/brokerage' };
   if (XFER.test(d)) return { excluded: true, type: r.direction === 'in' ? 'income' : 'expense', category: 'Transfer', reason: 'account transfer' };
   if (BETTING.test(d)) return { excluded: true, type: r.direction === 'in' ? 'income' : 'expense', category: 'Transfer', reason: 'betting/gambling' };
@@ -365,7 +369,7 @@ export function allowedCategories(): string[] {
   const fromBudgets = (db.prepare(`SELECT DISTINCT category FROM budgets ORDER BY category`).all() as {category:string}[])
     .map(r => r.category).filter(c => c && c.toLowerCase() !== 'total');
   const base = ['Groceries','Dining','Coffee','Transportation','Gas for Car','Shopping','Rent','Insurance',
-    'Internet','Cell Phone Bill','Subscriptions','Utilities','Health','Entertainment','Education','Travel','Fees','Miscellaneous'];
+    'Internet','Cell Phone Bill','Subscriptions','Utilities','Health','Entertainment','Education','Travel','Fees','Prop Trading','Miscellaneous'];
   return Array.from(new Set([...fromBudgets, ...base]));
 }
 
@@ -444,7 +448,7 @@ async function categorize(items: CatItem[], cats: string[]): Promise<Record<stri
     const fallback = (it: CatItem) => it.dir === 'in' ? 'Income' : 'Miscellaneous';
     const prompt = `You label bank/card transactions. Spending categories: ${cats.join(', ')}.
 For each item pick ONE label:
-- direction "out": a spending category, or "Investment" if it goes to a brokerage/robo-advisor/investing or crypto app (e.g. Robinhood, Wealthsimple, Webull, Fidelity, Coinbase), or "Transfer" if it moves your own money between accounts / pays a credit card, or is a gambling/betting deposit.
+- direction "out": a spending category, or "Investment" if it goes to a brokerage/robo-advisor/investing or crypto app (e.g. Robinhood, Wealthsimple, Webull, Fidelity, Coinbase), or "Prop Trading" for futures/forex prop-firm evaluation or funding fees (e.g. Apex Trader, Topstep, FTMO, Tradovate), or "Transfer" if it moves your own money between accounts / pays a credit card, or is a gambling/betting deposit.
 - direction "in": "Income" if from a company/employer/government/refund/rewards; "Reimbursement" if an individual PERSON is paying you back; "Transfer" if moving your own money between your accounts.
 Merchant/payer strings may contain city/state/ID noise — infer the real entity; a personal name implies a person.
 Reply with ONLY a JSON array of labels, one per item, IN THE SAME ORDER.
@@ -526,6 +530,7 @@ export async function parseStatement(file: { name: string; buffer: Buffer }): Pr
       else if (c === 'Investment') { type = r.direction === 'in' ? 'income' : 'expense'; category = 'Investment'; excluded = true; reason = 'investing/brokerage'; }
       else if (c === 'Reimbursement') { type = 'income'; category = 'Reimbursement'; excluded = true; reason = 'reimbursement (from a person)'; }
       else if (c === 'Income') { type = 'income'; category = 'Income'; excluded = false; }
+      else if (c === 'Prop Trading') { type = r.direction === 'in' ? 'income' : 'expense'; category = 'Prop Trading'; excluded = false; }
       else if (r.direction === 'in') { type = 'income'; category = 'Income'; excluded = false; } // a spending label on an inflow -> treat as income
       else { type = 'expense'; category = c; excluded = false; }
     }

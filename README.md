@@ -43,6 +43,7 @@ Open http://localhost:5173.
 | Card payment | `CAPITAL ONE MOBILE PMT`, `INTERNET PAYMENT - THANK YOU` | Excluded (transfer) |
 | Account transfer | `ONLINE TRANSFER`, `WIRE`, `TO SAV` | Excluded (transfer) |
 | Investment | Robinhood, Alinea, Wealthsimple, Webull, Coinbase, brokerages | Excluded (money to an asset), category **Investment** |
+| Prop Trading | Apex Trader, Alpha Futures, Topstep, FTMO, Tradovate | Counted as a **Prop Trading** expense (a trading cost); payouts count as income |
 | Reimbursement | `ZELLE from <person>`, Venmo from a person | Excluded (person paying you back) |
 | Income | `PAYROLL`, company deposits, refunds, rewards | Income |
 | Betting | `DRAFTKINGS`, `FANDUEL`, `POLYMARKET` | Excluded by default (churn) — re-include if you count it as spending |
