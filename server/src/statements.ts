@@ -323,10 +323,16 @@ const PAYMENT = /\b(payment|paymt|pymt|pmt|e-?payment|autopay|auto pay|thank you
 const XFER    = /\b(zelle|quickpay|acct xfer|account transfer|online transfer|transfer (to|from)|wire (transfer|incoming|outgoing)|to sav|from sav|to chk|from chk|venmo|cash ?app|paypal|interac|e-?transfer|coinbase|crypto|kraken|binance|gemini|robinhood|webull|wealthsimple|acorns|betterment|wealthfront|vanguard|fidelity|schwab|questrade|brokerage|real time payment|ally|sofi|marcus)\b/i;
 // Gambling/betting: gross deposits churn (you withdraw much of it), so treat as money-movement, not spend. Editable in review.
 const BETTING = /\b(draftkings|dk\*|fanduel|betfair|betmgm|caesars ?(sports|palace)|bet365|pointsbet|polymarket|underdog|prizepicks|bovada|sportsbook|sportsbk)/i;
+// Person-to-person apps (individual, not a company).
+const P2P = /\b(zelle|venmo|cash ?app|quickpay|interac|e-?transfer)\b/i;
 
 /** Returns a definite classification, or null to let the LLM decide the category. */
 function ruleClassify(r: RawRow): { excluded: boolean; type: 'expense'|'income'; category: string; reason: string } | null {
   const d = r.description;
+  // Person-to-person FIRST (a "Zelle payment from X" contains the word "payment" but is P2P,
+  // not a card payment): money IN from a person = reimbursement; money OUT = transfer. Both excluded.
+  if (P2P.test(d)) return { excluded: true, type: r.direction === 'in' ? 'income' : 'expense',
+    category: r.direction === 'in' ? 'Reimbursement' : 'Transfer', reason: 'person-to-person' };
   // Card payment -> transfer, never spend. Two shapes:
   //  - incoming "PAYMENT / THANK YOU" on a card statement (reduces the card balance)
   //  - outgoing payment from checking naming the card issuer (e.g. "DISCOVER E-PAYMENT")
@@ -378,30 +384,67 @@ function localCategory(desc: string): string | null {
   return null;
 }
 
-async function categorize(descriptions: string[], cats: string[]): Promise<Record<string, string>> {
-  if (!descriptions.length) return {};
-  const local: Record<string, string> = {};
-  const remaining: string[] = [];
-  for (const d of descriptions) { const c = localCategory(d); if (c) local[d] = c; else remaining.push(d); }
-  if (!remaining.length) return local;
+// ---------- learned merchant memory ---------------------------------------
+// Stable key for a merchant string: alpha-only, first two significant tokens.
+// Groups "WALMART STORE 04295 ..." and "WALMART STORE 00489 ..." to one key.
+function normalizeMerchant(desc: string): string {
+  return desc.toUpperCase().replace(/[^A-Z ]+/g, ' ').replace(/\s+/g, ' ').trim()
+    .split(' ').filter(t => t.length >= 2).slice(0, 2).join(' ');
+}
+// Movement labels are decided by rules/direction each time, not by merchant — don't memorize them.
+const MOVEMENT = new Set(['Transfer', 'Income', 'Reimbursement']);
+export function learnMerchant(desc: string, category: string) {
+  const key = normalizeMerchant(desc);
+  if (!key || !category || MOVEMENT.has(category)) return;
+  db.prepare(`INSERT INTO merchant_categories (merchant, category, updated_at) VALUES (?, ?, datetime('now'))
+              ON CONFLICT(merchant) DO UPDATE SET category=excluded.category, updated_at=excluded.updated_at`)
+    .run(key, category);
+}
+function lookupMerchants(descs: string[]): Record<string, string> {
+  const stmt = db.prepare(`SELECT category FROM merchant_categories WHERE merchant=?`);
+  const out: Record<string, string> = {};
+  for (const d of descs) { const row = stmt.get(normalizeMerchant(d)) as { category: string } | undefined; if (row) out[d] = row.category; }
+  return out;
+}
+
+type CatItem = { desc: string; dir: 'out' | 'in'; account: string; amount: number };
+
+async function categorize(items: CatItem[], cats: string[]): Promise<Record<string, string>> {
+  const uniq = new Map<string, CatItem>();
+  for (const it of items) if (!uniq.has(it.desc)) uniq.set(it.desc, it);
+  const list = [...uniq.values()];
+  if (!list.length) return {};
+
+  const result: Record<string, string> = {};
+  // 1) learned merchant memory (consistent + improves from past edits)
+  const mem = lookupMerchants(list.map(i => i.desc));
+  // 2) local merchant dictionary (spending, money-out only)
+  const remaining: CatItem[] = [];
+  for (const it of list) {
+    if (mem[it.desc]) { result[it.desc] = mem[it.desc]; continue; }
+    if (it.dir === 'out') { const lc = localCategory(it.desc); if (lc) { result[it.desc] = lc; continue; } }
+    remaining.push(it);
+  }
+  if (!remaining.length) return result;
+
+  // 3) LLM for the rest — with direction/amount context and person-vs-company inflow logic.
   assertKey();
-  const allowed = new Set(cats);
+  const allowed = new Set([...cats, 'Income', 'Reimbursement', 'Transfer']);
   const chunkSize = 40;
-  const chunks: string[][] = [];
+  const chunks: CatItem[][] = [];
   for (let i = 0; i < remaining.length; i += chunkSize) chunks.push(remaining.slice(i, i + chunkSize));
 
-  // Parallel chunks, small model, bounded per-call time. On any failure a chunk
-  // falls back to "Miscellaneous" — the review UI lets the user correct it.
   const results = await Promise.all(chunks.map(async (chunk): Promise<(readonly [string, string])[]> => {
-    const prompt = `You categorize card/bank transactions. Allowed categories:
-${cats.join(', ')}.
-For each merchant string below (they may contain city/state/ID noise — infer the real merchant), pick the best category.
-Use "Transfer" for money moved rather than spent: transfers to your own savings/brokerage/investment/crypto, gambling/betting deposits (Polymarket, Underdog, DraftKings, FanDuel), person-to-person (Zelle/Venmo), or credit-card payments.
-Use "Income" for money received (payroll, refunds, rewards).
-Reply with ONLY a JSON array of category strings, one per input, IN THE SAME ORDER. Use "Miscellaneous" if unsure.
+    const fallback = (it: CatItem) => it.dir === 'in' ? 'Income' : 'Miscellaneous';
+    const prompt = `You label bank/card transactions. Spending categories: ${cats.join(', ')}.
+For each item pick ONE label:
+- direction "out": a spending category, or "Transfer" if it moves your own money (savings/brokerage/investment/crypto), pays a credit card, or is a gambling/betting deposit.
+- direction "in": "Income" if from a company/employer/government/refund/rewards; "Reimbursement" if an individual PERSON is paying you back; "Transfer" if moving your own money between your accounts.
+Merchant/payer strings may contain city/state/ID noise — infer the real entity; a personal name implies a person.
+Reply with ONLY a JSON array of labels, one per item, IN THE SAME ORDER.
 
-Inputs (${chunk.length}):
-${JSON.stringify(chunk)}`;
+Items (${chunk.length}):
+${JSON.stringify(chunk.map(i => ({ description: i.desc, direction: i.dir, amount: i.amount, account: i.account })))}`;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const c = await nvidia.chat.completions.create({
@@ -411,13 +454,13 @@ ${JSON.stringify(chunk)}`;
         const t = c.choices[0]?.message?.content ?? '';
         const m = t.match(/\[[\s\S]*\]/);
         const arr: string[] = m ? JSON.parse(m[0]) : [];
-        return chunk.map((desc, i) => [desc, allowed.has(arr[i]) ? arr[i] : 'Miscellaneous'] as const);
-      } catch { /* retry once, then give up to Miscellaneous */ }
+        return chunk.map((it, i) => [it.desc, allowed.has(arr[i]) ? arr[i] : fallback(it)] as const);
+      } catch { /* retry once, then fall back */ }
     }
-    return chunk.map(desc => [desc, 'Miscellaneous'] as const);
+    return chunk.map(it => [it.desc, fallback(it)] as const);
   }));
 
-  return { ...local, ...Object.fromEntries(results.flat()) };
+  return { ...result, ...Object.fromEntries(results.flat()) };
 }
 
 // ---------- dedupe ---------------------------------------------------------
@@ -450,12 +493,15 @@ export async function parseStatement(file: { name: string; buffer: Buffer }): Pr
   const occ = new Map<string, number>();
   const cats = allowedCategories();
 
-  // rule pass first; collect the rest for the LLM
+  // rule pass first; everything else (both money-in and money-out) goes to categorize,
+  // which tries learned memory -> merchant dictionary -> LLM.
   const pre = raw.map(r => ({ r, rule: ruleClassify(r) }));
-  const needCat = Array.from(new Set(pre.filter(p => !p.rule && p.r.direction === 'out').map(p => p.r.description)));
-  console.error(`[stmt] ${file.name}: extracted ${raw.length}, categorizing ${needCat.length} descriptions…`);
+  const items = pre.filter(p => !p.rule).map(p => ({
+    desc: p.r.description, dir: p.r.direction, account: p.r.account, amount: p.r.amount,
+  }));
+  console.error(`[stmt] ${file.name}: extracted ${raw.length}, categorizing ${items.length} rows…`);
   const t0 = Date.now();
-  const catMap = await categorize(needCat, [...cats, 'Transfer', 'Income']);
+  const catMap = await categorize(items, cats);
   console.error(`[stmt] categorized in ${Date.now() - t0}ms`);
 
   const existing = db.prepare(`SELECT ext_id FROM transactions WHERE ext_id IS NOT NULL`).all() as {ext_id:string}[];
@@ -468,11 +514,12 @@ export async function parseStatement(file: { name: string; buffer: Buffer }): Pr
 
     let type: 'expense'|'income', category: string, excluded: boolean, reason: string | undefined;
     if (rule) { ({ type, category, excluded, reason } = rule); }
-    else if (r.direction === 'in') { type = 'income'; category = 'Income'; excluded = false; }
     else {
-      const c = catMap[r.description] || 'Miscellaneous';
-      if (c === 'Transfer') { type = 'expense'; category = 'Transfer'; excluded = true; reason = 'moved money (not spending)'; }
+      const c = catMap[r.description] || (r.direction === 'in' ? 'Income' : 'Miscellaneous');
+      if (c === 'Transfer') { type = r.direction === 'in' ? 'income' : 'expense'; category = 'Transfer'; excluded = true; reason = 'moved money (not spending)'; }
+      else if (c === 'Reimbursement') { type = 'income'; category = 'Reimbursement'; excluded = true; reason = 'reimbursement (from a person)'; }
       else if (c === 'Income') { type = 'income'; category = 'Income'; excluded = false; }
+      else if (r.direction === 'in') { type = 'income'; category = 'Income'; excluded = false; } // a spending label on an inflow -> treat as income
       else { type = 'expense'; category = c; excluded = false; }
     }
 
@@ -506,6 +553,7 @@ export function commitStatement(rows: ProposedTx[]): { inserted: number; skipped
       const res = ins.run(r.date, r.type, r.amount, r.category, r.description, '', 'statement',
         r.account, r.extId, r.excluded ? 1 : 0);
       if (res.changes > 0) inserted++; else skipped++;
+      learnMerchant(r.description, r.category); // remember the (possibly user-edited) category
     }
     db.exec('COMMIT');
   } catch (e) { db.exec('ROLLBACK'); throw e; }

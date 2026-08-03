@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import db from '../db.js';
+import { learnMerchant } from '../statements.js';
 
 const router = Router();
 
@@ -41,6 +42,7 @@ router.put('/:id', (req, res) => {
   db.prepare(
     `UPDATE transactions SET date=?,type=?,amount=?,category=?,description=?,method=?,source=? WHERE id=?`
   ).run(p.date, p.type, p.amount, p.category, p.description, p.method, p.source, Number(req.params.id));
+  if (p.description) learnMerchant(p.description, p.category); // fix once, remembered for future imports
   res.json(db.prepare('SELECT * FROM transactions WHERE id=?').get(Number(req.params.id)));
 });
 

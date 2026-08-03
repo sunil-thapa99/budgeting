@@ -28,6 +28,14 @@ db.exec(`
     expected REAL NOT NULL DEFAULT 0,
     PRIMARY KEY (month, category)
   );
+
+  -- Learned merchant -> category memory. Populated by imports and by user edits;
+  -- reused so categorization is consistent across imports and improves over time.
+  CREATE TABLE IF NOT EXISTS merchant_categories (
+    merchant   TEXT PRIMARY KEY,  -- normalized merchant key
+    category   TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
 `);
 
 // Migrate an older DB that predates the statement columns (SQLite has no ADD COLUMN IF NOT EXISTS).
