@@ -20,15 +20,33 @@ Open http://localhost:5173.
 
 ## Using it
 
-- **Import** — drop your budget `.xlsx`, pick which monthly tabs are yours, import.
-  Parses the "Budget by Paycheck" template: actual expense log, income actuals, and
-  per-category budgets. Re-importing **replaces** previously imported data (one-time migration,
-  not a live sync).
+- **Statements** — drop bank/card exports (Discover / Chase CSV, Capital One PDF; multiple at once).
+  Transactions are auto-categorized and shown in a review screen **before anything saves**.
+  Transfers, credit-card payments, and betting/investment churn are flagged and **excluded from
+  spending** so cross-account money movement doesn't double-count. Edit any category, include/exclude
+  rows, then import. Re-importing the same file is safe (idempotent — duplicates are skipped).
+  Requires `pdftotext` for PDF statements (`brew install poppler`).
+- **Import sheet** — drop your budget `.xlsx`, pick which monthly tabs are yours, import.
+  Parses the "Budget by Paycheck" template: expense log, income, and per-category budgets.
+  Re-importing **replaces** previously imported sheet data.
 - **Transactions** — add / edit / delete; **📷 Scan receipt** → vision LLM extracts merchant,
   total, date, category and pre-fills the form (images are downscaled in-browser before upload).
 - **Dashboard** — KPIs (income / expenses / net / savings rate), spending by category,
   budget vs actual (green = within, red = over), income-vs-expense trend, and an **AI insights**
   panel you can also ask free-form questions.
+
+### How statements are classified
+
+| Kind | Example | Treatment |
+|------|---------|-----------|
+| Card purchase | `WAL-MART`, `AMAZON` | Expense, auto-categorized |
+| Card payment | `CAPITAL ONE MOBILE PMT`, `INTERNET PAYMENT - THANK YOU` | Excluded (transfer) |
+| Account transfer / P2P | `ZELLE`, `ONLINE TRANSFER`, `WIRE`, Coinbase | Excluded (transfer) |
+| Betting / investing | `DRAFTKINGS`, `FANDUEL`, `POLYMARKET` | Excluded by default (churn) — re-include if you count it as spending |
+| Income | `PAYROLL`, refunds, rewards | Income |
+
+Classification uses the bank's own transaction-type column when present, keyword rules, and an LLM
+for the long tail. Everything is editable in the review screen — nothing is final until you import.
 
 ## Config (server/.env)
 
