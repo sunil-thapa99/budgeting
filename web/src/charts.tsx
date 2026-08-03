@@ -90,6 +90,24 @@ export function BudgetChart({ data }: { data: Summary['budgetVsActual'] }) {
   );
 }
 
+/* Net worth over time — single line, area-ish. */
+export function NetWorthChart({ data }: { data: { month: string; netWorth: number }[] }) {
+  const t = tokens();
+  if (!data.length) return <Empty note="No account activity yet. Import statements to build a net-worth trend." />;
+  const rows = data.map(d => ({ ...d, label: monthLabel(d.month) }));
+  return (
+    <ResponsiveContainer width="100%" height={260}>
+      <LineChart data={rows} margin={{ left: 8, right: 16, top: 8, bottom: 4 }}>
+        <CartesianGrid vertical={false} stroke={t.grid} />
+        <XAxis dataKey="label" tick={axis(t)} axisLine={false} tickLine={false} />
+        <YAxis tick={axis(t)} tickFormatter={money0} axisLine={false} tickLine={false} width={72} />
+        <Tooltip content={<TooltipBox t={t} />} />
+        <Line type="monotone" dataKey="netWorth" name="Net worth" stroke={t.series[0]} strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 5 }} />
+      </LineChart>
+    </ResponsiveContainer>
+  );
+}
+
 function Empty({ note }: { note?: string }) {
   return <div className="muted" style={{ padding: '32px 8px', textAlign: 'center' }}>{note || 'No data yet.'}</div>;
 }

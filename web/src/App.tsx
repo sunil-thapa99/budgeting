@@ -7,8 +7,9 @@ import Transactions from './pages/Transactions';
 import ImportPage from './pages/Import';
 import Statements from './pages/Statements';
 import Recurring from './pages/Recurring';
+import Accounts from './pages/Accounts';
 
-type View = 'dashboard' | 'transactions' | 'recurring' | 'statements' | 'import';
+type View = 'dashboard' | 'transactions' | 'recurring' | 'accounts' | 'statements' | 'import';
 
 export default function App() {
   const { mode, toggle } = useTheme();
@@ -36,6 +37,7 @@ export default function App() {
           <button className={view === 'dashboard' ? 'active' : ''} onClick={() => setView('dashboard')}>Dashboard</button>
           <button className={view === 'transactions' ? 'active' : ''} onClick={() => setView('transactions')}>Transactions</button>
           <button className={view === 'recurring' ? 'active' : ''} onClick={() => setView('recurring')}>Recurring</button>
+          <button className={view === 'accounts' ? 'active' : ''} onClick={() => setView('accounts')}>Net worth</button>
           <button className={view === 'statements' ? 'active' : ''} onClick={() => setView('statements')}>Statements</button>
           <button className={view === 'import' ? 'active' : ''} onClick={() => setView('import')}>Import sheet</button>
         </nav>
@@ -57,6 +59,7 @@ export default function App() {
         {view === 'dashboard' && <Dashboard month={month} key={`d${refresh}${month}`} />}
         {view === 'transactions' && <Transactions month={month} onChange={bump} key={`t${refresh}`} />}
         {view === 'recurring' && <Recurring key={`r${refresh}`} />}
+        {view === 'accounts' && <Accounts key={`a${refresh}`} />}
         {view === 'statements' && <Statements onDone={() => { bump(); setView('dashboard'); }} />}
         {view === 'import' && <ImportPage onDone={() => { bump(); setView('dashboard'); }} />}
       </main>

@@ -30,6 +30,13 @@ export type Summary = {
   budgetVsActual: { category: string; expected: number; actual: number; rollover: number; available: number }[];
 };
 
+export type Account = { name: string; type: string; opening: number; balance: number; configured: boolean };
+export type Accounts = {
+  accounts: Account[];
+  netWorth: number;
+  series: { month: string; netWorth: number }[];
+};
+
 export type ReceiptResult = {
   merchant: string | null;
   date: string | null;
@@ -65,6 +72,9 @@ export const api = {
   renameCategory: (from: string, to: string) =>
     req<{ ok: boolean; moved: number }>('/api/transactions/meta/categories/rename', json({ from, to })),
   recurring: () => req<Recurring>('/api/recurring'),
+  accounts: () => req<Accounts>('/api/accounts'),
+  saveAccount: (name: string, type: string, opening_balance: number) =>
+    req<{ ok: boolean }>(`/api/accounts/${encodeURIComponent(name)}`, { ...json({ type, opening_balance }), method: 'PUT' }),
   createTx: (t: TxInput) => req<Tx>('/api/transactions', json(t)),
   updateTx: (id: number, t: TxInput) => req<Tx>(`/api/transactions/${id}`, { ...json(t), method: 'PUT' }),
   deleteTx: (id: number) => req<void>(`/api/transactions/${id}`, { method: 'DELETE' }),
