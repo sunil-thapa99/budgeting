@@ -36,6 +36,15 @@ db.exec(`
     category   TEXT NOT NULL,
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
+
+  -- User-configured metadata for an account (opening balance + kind). Accounts
+  -- themselves are discovered from transactions.account; this just annotates them.
+  CREATE TABLE IF NOT EXISTS accounts (
+    name            TEXT PRIMARY KEY,
+    type            TEXT NOT NULL DEFAULT 'asset',  -- asset | credit | investment | cash
+    opening_balance REAL NOT NULL DEFAULT 0,        -- balance before the first recorded transaction
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+  );
 `);
 
 // Migrate an older DB that predates the statement columns (SQLite has no ADD COLUMN IF NOT EXISTS).

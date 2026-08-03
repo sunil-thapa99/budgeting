@@ -32,6 +32,11 @@ Open http://localhost:5173.
 - **Transactions** — add / edit / delete; **📷 Scan receipt** → vision LLM extracts merchant,
   total, date, category and pre-fills the form (images are downscaled in-browser before upload).
   **⬇ Export** downloads every transaction as CSV (`/api/export?format=csv`, or `?format=json`) — your data is yours.
+- **Net worth** — accounts are discovered automatically from your imported transactions; set each
+  account's **opening balance** and type (asset / credit / investment / cash) and the app derives a
+  current balance (opening + income − expense) and a **net-worth-over-time** chart. Credit cards show
+  as negative (debt). Fully derived — a payment from an account you never imported, or an asset with no
+  transaction feed (house, 401k), won't appear.
 - **Recurring** — detects subscriptions and recurring bills from your history by charge cadence
   (weekly/biweekly/monthly/quarterly/yearly), showing average amount, normalized monthly cost, next
   expected charge, and a total "recurring / month". Regularly-visited merchants (groceries) are filtered
