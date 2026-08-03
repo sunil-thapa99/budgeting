@@ -1,0 +1,83 @@
+export type Tx = {
+  id: number;
+  date: string;
+  type: 'expense' | 'income';
+  amount: number;
+  category: string;
+  description: string;
+  method: string;
+  source: string;
+  created_at: string;
+};
+
+export type Summary = {
+  month: string | null;
+  months: string[];
+  totals: { income: number; expense: number; net: number; savingsRate: number };
+  byCategory: { category: string; amount: number }[];
+  trend: { month: string; income: number; expense: number }[];
+  budgetVsActual: { category: string; expected: number; actual: number }[];
+};
+
+export type ReceiptResult = {
+  merchant: string | null;
+  date: string | null;
+  total: number | null;
+  currency: string;
+  category: string;
+  raw: string;
+};
+
+async function req<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, init);
+  if (!res.ok) {
+    let msg = res.statusText;
+    try { const j = await res.json(); msg = typeof j.error === 'string' ? j.error : JSON.stringify(j.error); } catch {}
+    throw new Error(msg);
+  }
+  return res.status === 204 ? (undefined as T) : res.json();
+}
+
+const json = (body: unknown): RequestInit => ({
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+});
+
+export type TxInput = Omit<Tx, 'id' | 'created_at'>;
+
+export const api = {
+  summary: (month?: string) => req<Summary>(`/api/summary${month ? `?month=${month}` : ''}`),
+  transactions: (q: Record<string, string> = {}) =>
+    req<Tx[]>(`/api/transactions?${new URLSearchParams(q)}`),
+  categories: () => req<string[]>('/api/transactions/meta/categories'),
+  createTx: (t: TxInput) => req<Tx>('/api/transactions', json(t)),
+  updateTx: (id: number, t: TxInput) => req<Tx>(`/api/transactions/${id}`, { ...json(t), method: 'PUT' }),
+  deleteTx: (id: number) => req<void>(`/api/transactions/${id}`, { method: 'DELETE' }),
+  insights: (month: string | null, question?: string) =>
+    req<{ text: string; model: string }>('/api/insights', json({ month, question })),
+  scanReceipt: (image: string) => req<ReceiptResult>('/api/receipt', json({ image })),
+  importPreview: (file: File) => {
+    const fd = new FormData(); fd.append('file', file);
+    return req<{ sheet: string; month: string; income: number; expenses: number; budgets: number; expenseTotal: number }[]>(
+      '/api/import/preview', { method: 'POST', body: fd });
+  },
+  importCommit: (file: File, sheets: string[]) => {
+    const fd = new FormData(); fd.append('file', file); fd.append('sheets', JSON.stringify(sheets));
+    return req<{ sheets: string[]; transactions: number; budgets: number }>('/api/import', { method: 'POST', body: fd });
+  },
+  stmtCategories: () => req<string[]>('/api/statements/categories'),
+  stmtPreview: (files: File[]) => {
+    const fd = new FormData(); files.forEach(f => fd.append('files', f));
+    return req<{ files: { file: string; account: string; rows: ProposedTx[] }[]; categories: string[] }>(
+      '/api/statements/preview', { method: 'POST', body: fd });
+  },
+  stmtCommit: (rows: ProposedTx[]) =>
+    req<{ inserted: number; skipped: number }>('/api/statements/commit', json({ rows })),
+};
+
+export type ProposedTx = {
+  date: string; description: string; amount: number;
+  direction: 'out' | 'in'; account: string; extId: string;
+  type: 'expense' | 'income'; category: string;
+  excluded: boolean; reason?: string;
+  duplicate?: 'imported' | 'possible';
+};
