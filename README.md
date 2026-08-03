@@ -38,7 +38,9 @@ Open http://localhost:5173.
   out by an interval-regularity gate; stale ones (last charge too long ago) show as inactive.
 - **Dashboard** — KPIs (income / expenses / net / savings rate), spending by category,
   budget vs actual (green = within, red = over), income-vs-expense trend, and an **AI insights**
-  panel you can also ask free-form questions.
+  panel you can also ask free-form questions. Budgets use **sinking-fund carryover**: unspent (or
+  overspent) budget rolls into the next month, so each category shows a running *available* balance
+  (available = carried-in + this month's budget − spent). Derived from your data — no setup.
 
 ### How statements are classified
 

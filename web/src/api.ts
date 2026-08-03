@@ -27,7 +27,7 @@ export type Summary = {
   totals: { income: number; expense: number; net: number; savingsRate: number };
   byCategory: { category: string; amount: number }[];
   trend: { month: string; income: number; expense: number }[];
-  budgetVsActual: { category: string; expected: number; actual: number }[];
+  budgetVsActual: { category: string; expected: number; actual: number; rollover: number; available: number }[];
 };
 
 export type ReceiptResult = {

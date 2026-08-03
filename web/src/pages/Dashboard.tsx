@@ -44,6 +44,7 @@ export default function Dashboard({ month }: { month: string | null }) {
           <h3>Budget vs actual</h3>
           <div className="sub">{month ? 'Green = within budget, red = over' : 'Pick a month to see budget health'}</div>
           <BudgetChart data={s.budgetVsActual} />
+          <Carryover data={s.budgetVsActual} />
         </div>
       </div>
 
@@ -65,6 +66,29 @@ function Tile({ label, value, cls, delta, deltaCls }:
       <div className="label">{label}</div>
       <div className={`value ${cls || ''}`}>{value}</div>
       {delta && <div className={`delta ${deltaCls || ''}`}>{delta}</div>}
+    </div>
+  );
+}
+
+// Sinking-fund carryover: show categories where prior months left a surplus/deficit.
+function Carryover({ data }: { data: Summary['budgetVsActual'] }) {
+  const rows = data.filter(d => Math.round(d.rollover) !== 0);
+  if (!rows.length) return null;
+  return (
+    <div style={{ marginTop: 14 }}>
+      <div className="sub">Carryover — unspent budget rolls forward (available = carried + budget − spent)</div>
+      <table>
+        <thead><tr><th>Category</th><th className="num">Carried in</th><th className="num">Available</th></tr></thead>
+        <tbody>
+          {rows.map(r => (
+            <tr key={r.category}>
+              <td>{r.category}</td>
+              <td className={`num ${r.rollover >= 0 ? 'pos' : 'neg'}`}>{r.rollover >= 0 ? '+' : ''}{money(r.rollover)}</td>
+              <td className={`num ${r.available < 0 ? 'neg' : ''}`} style={{ fontWeight: 600 }}>{money(r.available)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
