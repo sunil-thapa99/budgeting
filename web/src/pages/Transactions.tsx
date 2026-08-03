@@ -17,6 +17,7 @@ export default function Transactions({ month, onChange }: { month: string | null
   const [page, setPage] = useState(0);
   const [editing, setEditing] = useState<{ id?: number; data: TxInput } | null>(null);
   const [managing, setManaging] = useState(false);
+  const [splitting, setSplitting] = useState<Tx | null>(null);
   const [err, setErr] = useState('');
 
   const loadCats = () => api.categories().then(setCats).catch(() => {});
@@ -73,10 +74,13 @@ export default function Transactions({ month, onChange }: { month: string | null
               <tr key={r.id}>
                 <td className="muted">{r.date}</td>
                 <td>{r.description || <span className="muted">—</span>}</td>
-                <td><span className="pill">{r.category}</span></td>
+                <td>{r.split_count
+                  ? <span className="pill" title="Split across categories" style={{ cursor: 'pointer' }} onClick={() => setSplitting(r)}>Split · {r.split_count}</span>
+                  : <span className="pill">{r.category}</span>}</td>
                 <td><span className={`pill ${r.type === 'income' ? 'income' : ''}`}>{r.type}</span></td>
                 <td className="num" style={{ fontWeight: 600 }}>{r.type === 'income' ? '+' : '−'}{money(r.amount)}</td>
                 <td className="num">
+                  <button className="btn ghost icon" title="Split across categories" onClick={() => setSplitting(r)}>✂</button>
                   <button className="btn ghost icon" title="Edit" onClick={() => setEditing({ id: r.id, data: r })}>✎</button>
                   <button className="btn ghost icon" title="Delete" onClick={() => del(r.id)}>🗑</button>
                 </td>
@@ -107,6 +111,77 @@ export default function Transactions({ month, onChange }: { month: string | null
       {editing && <TxForm init={editing.data} id={editing.id} cats={cats}
                     onClose={() => setEditing(null)} onSave={save} />}
       {managing && <CategoryManager cats={cats} onRename={rename} onClose={() => setManaging(false)} />}
+      {splitting && <SplitModal tx={splitting} cats={cats}
+                      onClose={() => setSplitting(null)}
+                      onSaved={() => { setSplitting(null); reload(); onChange(); }} />}
+    </div>
+  );
+}
+
+function SplitModal({ tx, cats, onClose, onSaved }:
+  { tx: Tx; cats: string[]; onClose: () => void; onSaved: () => void }) {
+  const [rows, setRows] = useState<{ category: string; amount: number }[]>([]);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [had, setHad] = useState(false); // was it already split? (enables "Remove split")
+
+  useEffect(() => {
+    api.splits(tx.id).then(ch => {
+      setHad(ch.length > 0);
+      setRows(ch.length
+        ? ch.map(c => ({ category: c.category, amount: c.amount }))
+        : [{ category: tx.category, amount: tx.amount }, { category: '', amount: 0 }]);
+    }).catch(() => setRows([{ category: tx.category, amount: tx.amount }, { category: '', amount: 0 }]));
+  }, [tx.id]);
+
+  const sum = rows.reduce((s, r) => s + (r.amount || 0), 0);
+  const remaining = Math.round((tx.amount - sum) * 100) / 100;
+  const set = (i: number, k: 'category' | 'amount', v: any) =>
+    setRows(rs => rs.map((r, j) => (j === i ? { ...r, [k]: v } : r)));
+
+  const save = async (unsplit = false) => {
+    setBusy(true); setErr('');
+    try {
+      const splits = unsplit ? [] : rows.filter(r => r.category.trim() && r.amount > 0);
+      if (!unsplit && Math.abs(remaining) > 0.01) throw new Error(`Splits must sum to ${money(tx.amount)} — off by ${money(Math.abs(remaining))}`);
+      if (!unsplit && splits.length < 2) throw new Error('Add at least two categories to split.');
+      await api.saveSplit(tx.id, splits); onSaved();
+    } catch (e: any) { setErr(e.message); } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="card modal" onClick={e => e.stopPropagation()}>
+        <h3 style={{ marginBottom: 4 }}>Split transaction</h3>
+        <div className="sub" style={{ marginBottom: 12 }}>
+          {tx.description || 'Transaction'} · {money(tx.amount)} — divide across categories.
+        </div>
+        <div className="stack" style={{ gap: 6 }}>
+          {rows.map((r, i) => (
+            <div key={i} className="row" style={{ gap: 8 }}>
+              <input className="control" style={{ flex: 1 }} list="splitcats" placeholder="Category"
+                     value={r.category} onChange={e => set(i, 'category', e.target.value)} />
+              <input className="control" type="number" step="0.01" min="0" style={{ width: 120, textAlign: 'right' }}
+                     value={r.amount || ''} onChange={e => set(i, 'amount', parseFloat(e.target.value) || 0)} />
+              <button className="btn ghost icon" title="Remove row" disabled={rows.length <= 1}
+                      onClick={() => setRows(rs => rs.filter((_, j) => j !== i))}>🗑</button>
+            </div>
+          ))}
+          <datalist id="splitcats">{cats.map(c => <option key={c} value={c} />)}</datalist>
+        </div>
+        <div className="row" style={{ justifyContent: 'space-between', marginTop: 10 }}>
+          <button className="btn ghost" onClick={() => setRows(rs => [...rs, { category: '', amount: 0 }])}>+ Add category</button>
+          <div className={remaining === 0 ? 'muted' : 'neg'}>
+            {remaining === 0 ? 'Balanced' : `${remaining > 0 ? 'Unallocated' : 'Over'} ${money(Math.abs(remaining))}`}
+          </div>
+        </div>
+        {err && <div className="neg" style={{ marginTop: 8 }}>{err}</div>}
+        <div className="row" style={{ justifyContent: 'flex-end', marginTop: 12 }}>
+          {had && <button className="btn ghost" disabled={busy} onClick={() => save(true)} style={{ marginRight: 'auto' }}>Remove split</button>}
+          <button className="btn ghost" onClick={onClose}>Cancel</button>
+          <button className="btn" disabled={busy || remaining !== 0} onClick={() => save()}>{busy ? '…' : 'Save split'}</button>
+        </div>
+      </div>
     </div>
   );
 }

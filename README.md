@@ -29,7 +29,10 @@ Open http://localhost:5173.
 - **Import sheet** — drop your budget `.xlsx`, pick which monthly tabs are yours, import.
   Parses the "Budget by Paycheck" template: expense log, income, and per-category budgets.
   Re-importing **replaces** previously imported sheet data.
-- **Transactions** — add / edit / delete; **📷 Scan receipt** → vision LLM extracts merchant,
+- **Transactions** — add / edit / delete; **✂ Split** one transaction across categories (e.g. a $100
+  store run → $60 Groceries + $40 Household). The parent stays as the real money movement (kept in
+  account/net-worth flow); the child slices carry the categories (counted in spending & budgets) — so
+  nothing double-counts. **📷 Scan receipt** → vision LLM extracts merchant,
   total, date, category and pre-fills the form (images are downscaled in-browser before upload).
   **⬇ Export** downloads every transaction as CSV (`/api/export?format=csv`, or `?format=json`) — your data is yours.
 - **Net worth** — accounts are discovered automatically from your imported transactions; set each
