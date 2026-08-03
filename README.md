@@ -41,12 +41,18 @@ Open http://localhost:5173.
 |------|---------|-----------|
 | Card purchase | `WAL-MART`, `AMAZON` | Expense, auto-categorized |
 | Card payment | `CAPITAL ONE MOBILE PMT`, `INTERNET PAYMENT - THANK YOU` | Excluded (transfer) |
-| Account transfer / P2P | `ZELLE`, `ONLINE TRANSFER`, `WIRE`, Coinbase | Excluded (transfer) |
-| Betting / investing | `DRAFTKINGS`, `FANDUEL`, `POLYMARKET` | Excluded by default (churn) — re-include if you count it as spending |
-| Income | `PAYROLL`, refunds, rewards | Income |
+| Account transfer | `ONLINE TRANSFER`, `WIRE`, `TO SAV` | Excluded (transfer) |
+| Investment | Robinhood, Alinea, Wealthsimple, Webull, Coinbase, brokerages | Excluded (money to an asset), category **Investment** |
+| Reimbursement | `ZELLE from <person>`, Venmo from a person | Excluded (person paying you back) |
+| Income | `PAYROLL`, company deposits, refunds, rewards | Income |
+| Betting | `DRAFTKINGS`, `FANDUEL`, `POLYMARKET` | Excluded by default (churn) — re-include if you count it as spending |
 
-Classification uses the bank's own transaction-type column when present, keyword rules, and an LLM
-for the long tail. Everything is editable in the review screen — nothing is final until you import.
+Classification is a **hybrid** (the industry-standard approach): deterministic rules for the
+money-movement guards above (they must be reliable or totals break), a **learned merchant→category
+memory** that improves from your edits, and an LLM for the long tail with direction/amount context
+(money-in is Income from a company vs Reimbursement from a person). Named investing apps are
+guaranteed by rule; unknown ones are caught by the LLM. Everything is editable in the review
+screen — nothing is final until you import, and any edit is remembered for next time.
 
 **Formats:** CSV (with or without a header row — e.g. CIBC's headerless export is detected and its
 columns inferred by content), and PDF (Capital One has an exact parser; other banks' PDFs are read by

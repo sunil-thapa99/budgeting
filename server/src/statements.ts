@@ -114,7 +114,9 @@ function buildRows(rows: Record<string, string>[], m: CsvMap, account: string): 
       const raw = parseFloat((r[m.amount] || '').replace(/[^0-9.-]/g, ''));
       if (!isFinite(raw) || raw === 0) continue;
       amount = Math.abs(raw);
-      const isOut = m.details ? /debit/i.test(r[m.details])
+      // Prefer an explicit DEBIT/CREDIT signal (Details or Type column, e.g. "ACH_DEBIT") over the sign heuristic.
+      const dc = m.details ? r[m.details] : (m.type ? r[m.type] : '');
+      const isOut = /debit/i.test(dc) ? true : /credit/i.test(dc) ? false
         : (raw > 0 ? m.positiveIsOut : !m.positiveIsOut);
       direction = isOut ? 'out' : 'in';
     } else continue;
@@ -320,11 +322,14 @@ ${body}`;
 
 const ISSUERS = /(discover|capital one|chase|amex|american express|citi|synchrony|barclay|wells fargo|bank of america|boa|ally|sofi|visa|mastercard|cibc|rbc|td|scotiabank|bmo|tangerine)\b/i;
 const PAYMENT = /\b(payment|paymt|pymt|pmt|e-?payment|autopay|auto pay|thank you|(online|mobile) (pymt|pmt|payment))\b/i;
-const XFER    = /\b(zelle|quickpay|acct xfer|account transfer|online transfer|transfer (to|from)|wire (transfer|incoming|outgoing)|to sav|from sav|to chk|from chk|venmo|cash ?app|paypal|interac|e-?transfer|coinbase|crypto|kraken|binance|gemini|robinhood|webull|wealthsimple|acorns|betterment|wealthfront|vanguard|fidelity|schwab|questrade|brokerage|real time payment|ally|sofi|marcus)\b/i;
+const XFER    = /\b(zelle|quickpay|acct xfer|account transfer|online transfer|transfer (to|from)|wire (transfer|incoming|outgoing)|to sav|from sav|to chk|from chk|venmo|cash ?app|paypal|interac|e-?transfer|real time payment|ally|sofi|marcus)\b/i;
 // Gambling/betting: gross deposits churn (you withdraw much of it), so treat as money-movement, not spend. Editable in review.
 const BETTING = /\b(draftkings|dk\*|fanduel|betfair|betmgm|caesars ?(sports|palace)|bet365|pointsbet|polymarket|underdog|prizepicks|bovada|sportsbook|sportsbk)/i;
 // Person-to-person apps (individual, not a company).
 const P2P = /\b(zelle|venmo|cash ?app|quickpay|interac|e-?transfer)\b/i;
+// Brokerage / robo-advisor / crypto / investing apps -> "Investment" (money moved to an asset,
+// not spending). Named apps are guaranteed here; the LLM catches other investing apps dynamically.
+const INVESTING = /\b(robinhood|webull|wealthsimple|alinea|e\*?trade|etrade|m1 finance|public app|stash|acorns|betterment|wealthfront|vanguard|fidelity|schwab|questrade|ameritrade|interactive brokers|ibkr|sofi invest|coinbase|crypto\.?com|kraken|binance|gemini|blockfi|brokerage|securities|\binvest)\b/i;
 
 /** Returns a definite classification, or null to let the LLM decide the category. */
 function ruleClassify(r: RawRow): { excluded: boolean; type: 'expense'|'income'; category: string; reason: string } | null {
@@ -339,6 +344,7 @@ function ruleClassify(r: RawRow): { excluded: boolean; type: 'expense'|'income';
   if (PAYMENT.test(d) && (r.direction === 'in' || ISSUERS.test(d))) {
     return { excluded: true, type: r.direction === 'in' ? 'income' : 'expense', category: 'Transfer', reason: 'card payment' };
   }
+  if (INVESTING.test(d)) return { excluded: true, type: r.direction === 'in' ? 'income' : 'expense', category: 'Investment', reason: 'investing/brokerage' };
   if (XFER.test(d)) return { excluded: true, type: r.direction === 'in' ? 'income' : 'expense', category: 'Transfer', reason: 'account transfer' };
   if (BETTING.test(d)) return { excluded: true, type: r.direction === 'in' ? 'income' : 'expense', category: 'Transfer', reason: 'betting/gambling' };
   if (/payroll|direct dep|direct deposit/i.test(d)) return { excluded: false, type: 'income', category: 'Income', reason: 'payroll' };
@@ -392,7 +398,7 @@ function normalizeMerchant(desc: string): string {
     .split(' ').filter(t => t.length >= 2).slice(0, 2).join(' ');
 }
 // Movement labels are decided by rules/direction each time, not by merchant — don't memorize them.
-const MOVEMENT = new Set(['Transfer', 'Income', 'Reimbursement']);
+const MOVEMENT = new Set(['Transfer', 'Income', 'Reimbursement', 'Investment']);
 export function learnMerchant(desc: string, category: string) {
   const key = normalizeMerchant(desc);
   if (!key || !category || MOVEMENT.has(category)) return;
@@ -429,7 +435,7 @@ async function categorize(items: CatItem[], cats: string[]): Promise<Record<stri
 
   // 3) LLM for the rest — with direction/amount context and person-vs-company inflow logic.
   assertKey();
-  const allowed = new Set([...cats, 'Income', 'Reimbursement', 'Transfer']);
+  const allowed = new Set([...cats, 'Income', 'Reimbursement', 'Transfer', 'Investment']);
   const chunkSize = 40;
   const chunks: CatItem[][] = [];
   for (let i = 0; i < remaining.length; i += chunkSize) chunks.push(remaining.slice(i, i + chunkSize));
@@ -438,7 +444,7 @@ async function categorize(items: CatItem[], cats: string[]): Promise<Record<stri
     const fallback = (it: CatItem) => it.dir === 'in' ? 'Income' : 'Miscellaneous';
     const prompt = `You label bank/card transactions. Spending categories: ${cats.join(', ')}.
 For each item pick ONE label:
-- direction "out": a spending category, or "Transfer" if it moves your own money (savings/brokerage/investment/crypto), pays a credit card, or is a gambling/betting deposit.
+- direction "out": a spending category, or "Investment" if it goes to a brokerage/robo-advisor/investing or crypto app (e.g. Robinhood, Wealthsimple, Webull, Fidelity, Coinbase), or "Transfer" if it moves your own money between accounts / pays a credit card, or is a gambling/betting deposit.
 - direction "in": "Income" if from a company/employer/government/refund/rewards; "Reimbursement" if an individual PERSON is paying you back; "Transfer" if moving your own money between your accounts.
 Merchant/payer strings may contain city/state/ID noise — infer the real entity; a personal name implies a person.
 Reply with ONLY a JSON array of labels, one per item, IN THE SAME ORDER.
@@ -517,6 +523,7 @@ export async function parseStatement(file: { name: string; buffer: Buffer }): Pr
     else {
       const c = catMap[r.description] || (r.direction === 'in' ? 'Income' : 'Miscellaneous');
       if (c === 'Transfer') { type = r.direction === 'in' ? 'income' : 'expense'; category = 'Transfer'; excluded = true; reason = 'moved money (not spending)'; }
+      else if (c === 'Investment') { type = r.direction === 'in' ? 'income' : 'expense'; category = 'Investment'; excluded = true; reason = 'investing/brokerage'; }
       else if (c === 'Reimbursement') { type = 'income'; category = 'Reimbursement'; excluded = true; reason = 'reimbursement (from a person)'; }
       else if (c === 'Income') { type = 'income'; category = 'Income'; excluded = false; }
       else if (r.direction === 'in') { type = 'income'; category = 'Income'; excluded = false; } // a spending label on an inflow -> treat as income

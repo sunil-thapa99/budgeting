@@ -24,7 +24,7 @@ export default function Statements({ onDone }: { onDone: () => void }) {
         for (const r of f.rows)
           flat.push({ ...r, _id: id++, import: r.duplicate !== 'imported' }); // skip already-imported by default
       setItems(flat);
-      setCats([...res.categories, 'Income', 'Reimbursement', 'Transfer']);
+      setCats([...res.categories, 'Income', 'Reimbursement', 'Investment', 'Transfer']);
     } catch (e: any) { setErr(e.message.includes('NVIDIA_API_KEY') ? 'Add your NVIDIA API key to server/.env to categorize statements.' : e.message); }
     finally { setBusy(false); }
   };
@@ -157,7 +157,7 @@ export default function Statements({ onDone }: { onDone: () => void }) {
                     </td>
                     <td>
                       <select className="control" style={{ padding: '4px 8px' }} value={it.category} disabled={it.excluded}
-                        onChange={e => { const c = e.target.value; const mv = c === 'Transfer' || c === 'Reimbursement'; set(it._id, { category: c, excluded: mv, type: (c === 'Income' || c === 'Reimbursement') ? 'income' : 'expense' }); }}>
+                        onChange={e => { const c = e.target.value; const mv = c === 'Transfer' || c === 'Reimbursement' || c === 'Investment'; set(it._id, { category: c, excluded: mv, type: (c === 'Income' || c === 'Reimbursement') ? 'income' : 'expense' }); }}>
                         {[...new Set([it.category, ...cats])].map(c => <option key={c} value={c}>{c}</option>)}
                       </select>
                     </td>
