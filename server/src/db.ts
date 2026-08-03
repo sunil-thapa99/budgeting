@@ -59,5 +59,8 @@ export type Transaction = {
   description: string;
   method: string;
   source: string;
+  account: string;
+  ext_id: string | null;
+  excluded: number;   // 0 | 1
   created_at: string;
 };

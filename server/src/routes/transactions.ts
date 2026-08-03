@@ -15,17 +15,25 @@ const TxInput = z.object({
   source: z.string().default('manual'),
 });
 
-// GET /api/transactions?from=&to=&type=&category=
+// GET /api/transactions?from=&to=&type=&category=&q=&limit=&offset=  ->  { rows, total }
 router.get('/', (req, res) => {
-  const { from, to, type, category } = req.query as Record<string, string>;
+  const { from, to, type, category, q, limit, offset } = req.query as Record<string, string>;
   const where: string[] = [];
   const params: any[] = [];
   if (from) { where.push('date >= ?'); params.push(from); }
   if (to) { where.push('date <= ?'); params.push(to); }
   if (type) { where.push('type = ?'); params.push(type); }
   if (category) { where.push('category = ?'); params.push(category); }
-  const sql = `SELECT * FROM transactions ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY date DESC, id DESC`;
-  res.json(db.prepare(sql).all(...params));
+  if (q) { where.push('(description LIKE ? OR category LIKE ?)'); params.push(`%${q}%`, `%${q}%`); } // LIKE is ASCII-case-insensitive in SQLite
+  const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
+
+  const total = (db.prepare(`SELECT COUNT(*) AS n FROM transactions ${whereSql}`).get(...params) as { n: number }).n;
+  const lim = Math.min(Math.max(Number(limit) || 100, 1), 500);
+  const off = Math.max(Number(offset) || 0, 0);
+  const rows = db.prepare(
+    `SELECT * FROM transactions ${whereSql} ORDER BY date DESC, id DESC LIMIT ? OFFSET ?`
+  ).all(...params, lim, off);
+  res.json({ rows, total });
 });
 
 router.post('/', (req, res) => {
@@ -59,6 +67,40 @@ router.get('/meta/categories', (_req, res) => {
      ORDER BY category`
   ).all() as { category: string }[];
   res.json(rows.map(r => r.category));
+});
+
+// Rename a category everywhere (transactions, budgets, learned merchant memory).
+// If `to` already exists it's a merge — budget rows for the same month are summed.
+// Exported (taking `database`) so it's testable against an in-memory DB.
+export function renameCategory(database: typeof db, from: string, to: string): number {
+  if (from === to) return 0;
+  database.exec('BEGIN');
+  try {
+    const moved = database.prepare('UPDATE transactions SET category=? WHERE category=?').run(to, from).changes;
+    database.prepare('UPDATE merchant_categories SET category=? WHERE category=?').run(to, from);
+
+    // Budgets have PK (month, category) — merge instead of blindly renaming into a conflict.
+    const fromRows = database.prepare('SELECT month, expected FROM budgets WHERE category=?').all(from) as { month: string; expected: number }[];
+    const target = database.prepare('SELECT 1 FROM budgets WHERE month=? AND category=?');
+    const add = database.prepare('UPDATE budgets SET expected=expected+? WHERE month=? AND category=?');
+    const ins = database.prepare('INSERT INTO budgets (month, category, expected) VALUES (?,?,?)');
+    const delFrom = database.prepare('DELETE FROM budgets WHERE month=? AND category=?');
+    for (const r of fromRows) {
+      if (target.get(r.month, to)) add.run(r.expected, r.month, to);
+      else ins.run(r.month, to, r.expected);
+      delFrom.run(r.month, from);
+    }
+    database.exec('COMMIT');
+    return Number(moved);
+  } catch (e) {
+    database.exec('ROLLBACK');
+    throw e;
+  }
+}
+
+router.post('/meta/categories/rename', (req, res) => {
+  const { from, to } = z.object({ from: z.string().min(1), to: z.string().min(1) }).parse(req.body);
+  res.json({ ok: true, moved: renameCategory(db, from, to) });
 });
 
 export default router;
