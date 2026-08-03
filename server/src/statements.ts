@@ -42,15 +42,17 @@ function accountFromName(name: string, text = ''): string {
   return name.replace(/\.(csv|pdf|xlsx?)$/i, '');
 }
 
-// "06/14/2026" or "6/14/2026" -> 2026-06-14  (US mm/dd/yyyy from these banks)
+const pad2 = (n: number) => String(n).padStart(2, '0');
+// Parse the common statement date shapes -> YYYY-MM-DD:
+//  MM/DD/YYYY (US cards), YYYY-MM-DD / YYYY/MM/DD (ISO / Canadian exports).
 function usDate(s: string): string | null {
-  const m = String(s).trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
-  if (!m) return null;
-  let [, mo, d, y] = m;
-  const yy = y.length === 2 ? `20${y}` : y;
-  const mn = +mo, dn = +d;
-  if (mn < 1 || mn > 12 || dn < 1 || dn > 31) return null;
-  return `${yy}-${String(mn).padStart(2,'0')}-${String(dn).padStart(2,'0')}`;
+  const t = String(s).trim();
+  let m = t.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})$/); // ISO first
+  if (m) { const [, y, mo, d] = m; if (+mo >= 1 && +mo <= 12 && +d >= 1 && +d <= 31) return `${y}-${pad2(+mo)}-${pad2(+d)}`; }
+  m = t.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})$/);   // MM/DD/YYYY
+  if (m) { const mo = +m[1], d = +m[2], y = m[3].length === 2 ? 2000 + +m[3] : +m[3];
+           if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) return `${y}-${pad2(mo)}-${pad2(d)}`; }
+  return null;
 }
 
 // ---------- CSV extraction (deterministic) --------------------------------
@@ -134,7 +136,8 @@ ${sample.map(r => JSON.stringify(r)).join('\n')}
 Identify the columns. Reply with ONLY JSON:
 {"date": <header>, "description": <header>, "amount": <header or null>, "debit": <header or null>, "credit": <header or null>, "type": <header or null>, "positiveMeans": "out" | "in"}
 - "amount" = a single signed amount column (else null and use debit/credit).
-- "positiveMeans" = does a POSITIVE amount mean money OUT (a charge/purchase) or money IN (a deposit/payment)? For most credit cards a positive amount is a charge ("out"); for most checking exports a positive amount is a deposit ("in").`;
+- If there are TWO separate money columns, one is DEBIT (money spent — store/restaurant/online purchases) and one is CREDIT (money received — deposits, PAYROLL, refunds). Decide which is which from the sample rows: a payroll/deposit row fills the CREDIT column; a purchase row fills the DEBIT column.
+- "positiveMeans" (only for a single amount column) = does a POSITIVE number mean money OUT (charge/purchase) or IN (deposit/payment)? Most credit cards: positive = charge ("out"); most checking exports: positive = deposit ("in").`;
     const c = await nvidia.chat.completions.create({
       model: CATEGORIZE_MODEL, temperature: 0, max_tokens: 300,
       messages: [{ role: 'user', content: prompt }],
@@ -152,16 +155,68 @@ Identify the columns. Reply with ONLY JSON:
   } catch { return null; }
 }
 
+// Deterministic column analysis for headerless CSVs (e.g. CIBC): find the date, money,
+// and description columns by their contents, and tell debit from credit by row content.
+function positionalMap(dataRows: string[][], headers: string[]): CsvMap {
+  const isMoney = (c: string) => /^-?\$?\s?\(?-?\d[\d,]*\.\d{2}\)?$/.test(c.trim());
+  const sample = dataRows.slice(0, 40);
+  const stat = headers.map((_, i) => {
+    let date = 0, money = 0, textLen = 0;
+    for (const r of sample) { const c = (r[i] ?? '').trim(); if (!c) continue;
+      if (usDate(c)) date++; else if (isMoney(c)) money++; else textLen += c.length; }
+    return { i, date, money, textLen };
+  });
+  const dateCol = [...stat].sort((a, b) => b.date - a.date)[0];
+  const moneyCols = stat.filter(s => s.money > 0 && s.i !== dateCol.i).sort((a, b) => a.i - b.i);
+  const descCol = stat.filter(s => s.i !== dateCol.i && !moneyCols.some(m => m.i === s.i))
+    .sort((a, b) => b.textLen - a.textLen)[0];
+
+  const map: CsvMap = { date: headers[dateCol.i], desc: headers[descCol ? descCol.i : 1], positiveIsOut: false };
+  const di = descCol ? descCol.i : 1;
+  if (moneyCols.length >= 2) {
+    let debitI = moneyCols[0].i, creditI = moneyCols[1].i; // CIBC default: debit column first
+    for (const r of sample) {                              // ...but confirm from an income row
+      if (/payroll|deposit|refund|interest|reversal|e-?transfer|payment from|gov|benefit/i.test(r[di] || '')) {
+        const inDebit = !!(r[debitI] || '').trim(), inCredit = !!(r[creditI] || '').trim();
+        if (inDebit && !inCredit) { [debitI, creditI] = [creditI, debitI]; }
+        break;
+      }
+    }
+    map.debit = headers[debitI]; map.credit = headers[creditI];
+  } else if (moneyCols.length === 1) {
+    map.amount = headers[moneyCols[0].i];
+    // Single signed column: infer card-vs-bank sign from a payment row (payments are money-in).
+    const mi = moneyCols[0].i;
+    for (const r of sample) {
+      if (/payment|thank you/i.test(r[di] || '')) {
+        const v = parseFloat((r[mi] || '').replace(/[^0-9.-]/g, ''));
+        if (isFinite(v) && v !== 0) { map.positiveIsOut = v < 0; break; } // payment negative => positive = charge (out)
+      }
+    }
+  }
+  return map;
+}
+
 async function extractCSV(buf: Buffer, account: string): Promise<RawRow[]> {
   const table = parseCSV(buf.toString('utf8')).filter(r => r.some(c => c.trim() !== ''));
-  if (table.length < 2) return [];
-  const headers = table[0].map(h => h.trim());
-  const rows = table.slice(1).map(r => Object.fromEntries(headers.map((h, i) => [h, (r[i] ?? '').trim()])));
+  if (!table.length) return [];
 
-  let out = buildRows(rows, heuristicMap(headers), account);
+  // Some banks (e.g. CIBC) export with NO header row — the first row is already a
+  // transaction. Detect that (row 0 contains a date or a money amount) and synthesize
+  // positional column names so the LLM mapper can still identify the columns.
+  const looksLikeData = (row: string[]) =>
+    row.some(c => usDate(c.trim())) || row.some(c => /^\$?\s?-?\d[\d,]*\.\d{2}$/.test(c.trim()));
+  const headerless = looksLikeData(table[0]);
+  const headers = headerless ? table[0].map((_, i) => `col${i + 1}`) : table[0].map(h => h.trim());
+  const dataRows = headerless ? table : table.slice(1);
+  if (!dataRows.length) return [];
+  const rows = dataRows.map(r => Object.fromEntries(headers.map((h, i) => [h, (r[i] ?? '').trim()])));
+
+  // headerless -> deterministic positional analysis; otherwise header-name heuristic.
+  let out = buildRows(rows, headerless ? positionalMap(dataRows, headers) : heuristicMap(headers), account);
   if (!out.length) {
-    console.error(`[stmt] unrecognized CSV layout (${headers.join(', ')}) — asking LLM to map columns`);
-    const map = await llmCsvMap(headers, table.slice(1, 4));
+    console.error(`[stmt] ${headerless ? 'headerless' : 'unrecognized'} CSV (${headers.join(', ')}) — asking LLM to map columns`);
+    const map = await llmCsvMap(headers, dataRows.slice(0, 4));
     if (map) out = buildRows(rows, map, account);
   }
   return out;
@@ -263,9 +318,9 @@ ${body}`;
 
 // ---------- classification: transfers / card payments / income ------------
 
-const ISSUERS = /(discover|capital one|chase|amex|american express|citi|synchrony|barclay|wells fargo|bank of america|boa|ally|sofi)\b/i;
+const ISSUERS = /(discover|capital one|chase|amex|american express|citi|synchrony|barclay|wells fargo|bank of america|boa|ally|sofi|visa|mastercard|cibc|rbc|td|scotiabank|bmo|tangerine)\b/i;
 const PAYMENT = /\b(payment|paymt|pymt|pmt|e-?payment|autopay|auto pay|thank you|(online|mobile) (pymt|pmt|payment))\b/i;
-const XFER    = /\b(zelle|quickpay|acct xfer|account transfer|online transfer|transfer (to|from)|wire (transfer|incoming|outgoing)|to sav|from sav|to chk|from chk|venmo|cash ?app|paypal|coinbase|crypto|kraken|binance|gemini|robinhood|webull|acorns|betterment|wealthfront|vanguard|fidelity|schwab|brokerage|real time payment|ally|sofi|marcus)\b/i;
+const XFER    = /\b(zelle|quickpay|acct xfer|account transfer|online transfer|transfer (to|from)|wire (transfer|incoming|outgoing)|to sav|from sav|to chk|from chk|venmo|cash ?app|paypal|interac|e-?transfer|coinbase|crypto|kraken|binance|gemini|robinhood|webull|wealthsimple|acorns|betterment|wealthfront|vanguard|fidelity|schwab|questrade|brokerage|real time payment|ally|sofi|marcus)\b/i;
 // Gambling/betting: gross deposits churn (you withdraw much of it), so treat as money-movement, not spend. Editable in review.
 const BETTING = /\b(draftkings|dk\*|fanduel|betfair|betmgm|caesars ?(sports|palace)|bet365|pointsbet|polymarket|underdog|prizepicks|bovada|sportsbook|sportsbk)/i;
 

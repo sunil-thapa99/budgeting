@@ -48,6 +48,12 @@ Open http://localhost:5173.
 Classification uses the bank's own transaction-type column when present, keyword rules, and an LLM
 for the long tail. Everything is editable in the review screen — nothing is final until you import.
 
+**Formats:** CSV (with or without a header row — e.g. CIBC's headerless export is detected and its
+columns inferred by content), and PDF (Capital One has an exact parser; other banks' PDFs are read by
+the LLM). Dates handle `MM/DD/YYYY` and ISO `YYYY-MM-DD`. If an unusual bank's signs come in inverted,
+use the per-row **Type** control or the **Flip income/expense** button in the review screen. Currency
+display is a single constant (`USD`) in `web/src/util.ts` — change it for CAD/other.
+
 ## Config (server/.env)
 
 | var | default | notes |
