@@ -52,10 +52,12 @@ for (const [col, def] of [
   ['account', `TEXT NOT NULL DEFAULT ''`],
   ['ext_id', `TEXT`],
   ['excluded', `INTEGER NOT NULL DEFAULT 0`],
+  ['parent_id', `INTEGER`],  // set on split children -> they re-slice the parent's amount by category
 ] as const) {
   try { db.exec(`ALTER TABLE transactions ADD COLUMN ${col} ${def}`); } catch { /* already exists */ }
 }
 try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_tx_extid ON transactions(ext_id) WHERE ext_id IS NOT NULL`); } catch {}
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_tx_parent ON transactions(parent_id)`); } catch {}
 
 export default db;
 

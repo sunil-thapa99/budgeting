@@ -3,6 +3,10 @@ import db from '../db.js';
 
 const router = Router();
 
+// A split parent is re-sliced by its children, which carry the real categories/amounts.
+// Exclude parents from every spending aggregation so their amount isn't counted twice.
+const NOT_SPLIT_PARENT = `AND id NOT IN (SELECT parent_id FROM transactions WHERE parent_id IS NOT NULL)`;
+
 // GET /api/summary?month=YYYY-MM   (month optional -> all-time + latest month)
 router.get('/', (req, res) => {
   const month = (req.query.month as string) || null; // 'YYYY-MM'
@@ -13,14 +17,14 @@ router.get('/', (req, res) => {
     SELECT
       COALESCE(SUM(CASE WHEN type='income'  THEN amount END),0) AS income,
       COALESCE(SUM(CASE WHEN type='expense' THEN amount END),0) AS expense
-    FROM transactions WHERE excluded=0 ${monthFilter}
+    FROM transactions WHERE excluded=0 ${NOT_SPLIT_PARENT} ${monthFilter}
   `).get(...mp) as { income: number; expense: number };
   const net = totals.income - totals.expense;
   const savingsRate = totals.income > 0 ? net / totals.income : 0;
 
   const byCategory = db.prepare(`
     SELECT category, SUM(amount) AS amount
-    FROM transactions WHERE type='expense' AND excluded=0 ${monthFilter}
+    FROM transactions WHERE type='expense' AND excluded=0 ${NOT_SPLIT_PARENT} ${monthFilter}
     GROUP BY category ORDER BY amount DESC
   `).all(...mp);
 
@@ -29,7 +33,7 @@ router.get('/', (req, res) => {
     SELECT strftime('%Y-%m', date) AS month,
       COALESCE(SUM(CASE WHEN type='income'  THEN amount END),0) AS income,
       COALESCE(SUM(CASE WHEN type='expense' THEN amount END),0) AS expense
-    FROM transactions WHERE excluded=0 GROUP BY month ORDER BY month
+    FROM transactions WHERE excluded=0 ${NOT_SPLIT_PARENT} GROUP BY month ORDER BY month
   `).all();
 
   // Budget vs actual for the selected month, with sinking-fund carryover.
@@ -38,7 +42,7 @@ router.get('/', (req, res) => {
     const budgets = db.prepare('SELECT month, category, expected FROM budgets').all() as ExpRow[];
     const actuals = db.prepare(`
       SELECT strftime('%Y-%m', date) AS month, category, SUM(amount) AS actual
-      FROM transactions WHERE type='expense' AND excluded=0 GROUP BY month, category
+      FROM transactions WHERE type='expense' AND excluded=0 ${NOT_SPLIT_PARENT} GROUP BY month, category
     `).all() as ActRow[];
     budgetVsActual = computeBudget(budgets, actuals, month);
   }

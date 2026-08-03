@@ -9,6 +9,8 @@ export type Tx = {
   source: string;
   account?: string;
   excluded?: number;
+  parent_id?: number | null;
+  split_count?: number;
   created_at: string;
 };
 
@@ -78,6 +80,9 @@ export const api = {
   createTx: (t: TxInput) => req<Tx>('/api/transactions', json(t)),
   updateTx: (id: number, t: TxInput) => req<Tx>(`/api/transactions/${id}`, { ...json(t), method: 'PUT' }),
   deleteTx: (id: number) => req<void>(`/api/transactions/${id}`, { method: 'DELETE' }),
+  splits: (id: number) => req<Tx[]>(`/api/transactions/${id}/splits`),
+  saveSplit: (id: number, splits: { category: string; amount: number }[]) =>
+    req<{ ok: boolean; splits: number }>(`/api/transactions/${id}/split`, json({ splits })),
   insights: (month: string | null, question?: string) =>
     req<{ text: string; model: string }>('/api/insights', json({ month, question, currency: getCurrency() })),
   scanReceipt: (image: string) => req<ReceiptResult>('/api/receipt', json({ image })),

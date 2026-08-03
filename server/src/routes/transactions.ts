@@ -25,13 +25,15 @@ router.get('/', (req, res) => {
   if (type) { where.push('type = ?'); params.push(type); }
   if (category) { where.push('category = ?'); params.push(category); }
   if (q) { where.push('(description LIKE ? OR category LIKE ?)'); params.push(`%${q}%`, `%${q}%`); } // LIKE is ASCII-case-insensitive in SQLite
-  const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
+  where.push('parent_id IS NULL'); // split children are shown under their parent, not as top-level rows
+  const whereSql = 'WHERE ' + where.join(' AND ');
 
   const total = (db.prepare(`SELECT COUNT(*) AS n FROM transactions ${whereSql}`).get(...params) as { n: number }).n;
   const lim = Math.min(Math.max(Number(limit) || 100, 1), 500);
   const off = Math.max(Number(offset) || 0, 0);
   const rows = db.prepare(
-    `SELECT * FROM transactions ${whereSql} ORDER BY date DESC, id DESC LIMIT ? OFFSET ?`
+    `SELECT t.*, (SELECT COUNT(*) FROM transactions c WHERE c.parent_id=t.id) AS split_count
+     FROM transactions t ${whereSql} ORDER BY date DESC, id DESC LIMIT ? OFFSET ?`
   ).all(...params, lim, off);
   res.json({ rows, total });
 });
@@ -55,8 +57,43 @@ router.put('/:id', (req, res) => {
 });
 
 router.delete('/:id', (req, res) => {
-  db.prepare('DELETE FROM transactions WHERE id=?').run(Number(req.params.id));
+  const id = Number(req.params.id);
+  db.prepare('DELETE FROM transactions WHERE id=? OR parent_id=?').run(id, id); // cascade to split children
   res.status(204).end();
+});
+
+// Children of a split parent.
+router.get('/:id/splits', (req, res) => {
+  res.json(db.prepare('SELECT * FROM transactions WHERE parent_id=? ORDER BY id').all(Number(req.params.id)));
+});
+
+// Split a transaction into per-category child rows summing to its amount (empty array = unsplit).
+// The parent stays as the real money movement (kept in account/net-worth flow); children carry the
+// category breakdown (counted in spending/budgets). Guards in summary keep the parent out of category totals.
+router.post('/:id/split', (req, res) => {
+  const id = Number(req.params.id);
+  const parent = db.prepare('SELECT * FROM transactions WHERE id=? AND parent_id IS NULL').get(id) as any;
+  if (!parent) { res.status(404).json({ error: 'transaction not found' }); return; }
+  const { splits } = z.object({
+    splits: z.array(z.object({ category: z.string().min(1), amount: z.number().positive() })),
+  }).parse(req.body);
+  if (splits.length) {
+    const sum = splits.reduce((s, x) => s + x.amount, 0);
+    if (Math.abs(sum - parent.amount) > 0.01) { res.status(400).json({ error: `splits must sum to ${parent.amount}` }); return; }
+  }
+
+  db.exec('BEGIN');
+  try {
+    db.prepare('DELETE FROM transactions WHERE parent_id=?').run(id); // replace any prior split
+    const ins = db.prepare(`INSERT INTO transactions (date,type,amount,category,description,method,source,account,excluded,parent_id)
+                            VALUES (?,?,?,?,?,?,?,'',0,?)`);
+    for (const s of splits) ins.run(parent.date, parent.type, s.amount, s.category, parent.description, parent.method, parent.source, id);
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+  res.json({ ok: true, splits: splits.length });
 });
 
 // Distinct categories (for dropdowns), union of used + budgeted
