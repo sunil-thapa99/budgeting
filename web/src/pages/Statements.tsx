@@ -32,6 +32,19 @@ export default function Statements({ onDone }: { onDone: () => void }) {
   const set = (id: number, patch: Partial<Item>) =>
     setItems(list => list.map(it => it._id === id ? { ...it, ...patch } : it));
 
+  // #1: explicit expense / income / transfer control per row
+  const setKind = (id: number, kind: 'Expense' | 'Income' | 'Transfer') => set(id,
+    kind === 'Income'   ? { type: 'income', excluded: false, category: 'Income' }
+  : kind === 'Transfer' ? { excluded: true, category: 'Transfer' }
+  :                       { type: 'expense', excluded: false, category: 'Miscellaneous' });
+  const kindOf = (it: Item): 'Expense' | 'Income' | 'Transfer' =>
+    it.excluded ? 'Transfer' : it.type === 'income' ? 'Income' : 'Expense';
+
+  // #1: flip income<->expense for the rows currently shown (fixes a whole account read backwards)
+  const flipVisible = () => setItems(list => list.map(it =>
+    (showTransfers || !it.excluded) && (!fileFilter || it.account === fileFilter) && !it.excluded
+      ? { ...it, type: it.type === 'income' ? 'expense' : 'income' } : it));
+
   const files = useMemo(() => [...new Set(items.map(i => i.account))], [items]);
   const visible = items.filter(i =>
     (showTransfers || !i.excluded) && (!fileFilter || i.account === fileFilter));
@@ -45,12 +58,8 @@ export default function Statements({ onDone }: { onDone: () => void }) {
   const commit = async () => {
     setBusy(true); setErr('');
     try {
-      // category 'Transfer' -> excluded; 'Income' -> income type (keep user edits authoritative)
-      const rows: ProposedTx[] = toImport.map(({ _id, import: _imp, ...r }) => ({
-        ...r,
-        excluded: r.category === 'Transfer' ? true : r.excluded,
-        type: r.category === 'Income' ? 'income' : r.type,
-      }));
+      // row.type / excluded / category are kept consistent by the Type + Category controls
+      const rows: ProposedTx[] = toImport.map(({ _id, import: _imp, ...r }) => r);
       const res = await api.stmtCommit(rows);
       setDone(res);
     } catch (e: any) { setErr(e.message); } finally { setBusy(false); }
@@ -113,6 +122,8 @@ export default function Statements({ onDone }: { onDone: () => void }) {
                 </label>
               </div>
               <div className="row">
+                <button className="btn ghost" onClick={flipVisible}
+                  title="Swap income⇄expense for the rows shown — fixes an account whose signs were read backwards">⇅ Flip income/expense</button>
                 <button className="btn ghost" onClick={() => setItems(l => l.map(i => ({ ...i, import: true })))}>Select all</button>
                 <button className="btn ghost" onClick={() => setItems(l => l.map(i => ({ ...i, import: false })))}>None</button>
                 <button className="btn" disabled={busy || !toImport.length} onClick={commit}>
@@ -126,7 +137,7 @@ export default function Statements({ onDone }: { onDone: () => void }) {
             <table>
               <thead><tr>
                 <th style={{ width: 34 }}></th><th>Date</th><th>Description</th><th>Account</th>
-                <th className="num">Amount</th><th>Category</th><th></th>
+                <th className="num">Amount</th><th>Type</th><th>Category</th><th></th>
               </tr></thead>
               <tbody>
                 {visible.map(it => (
@@ -139,8 +150,14 @@ export default function Statements({ onDone }: { onDone: () => void }) {
                       {it.type === 'income' ? '+' : '−'}{money(it.amount)}
                     </td>
                     <td>
-                      <select className="control" style={{ padding: '4px 8px' }} value={it.category}
-                        onChange={e => { const c = e.target.value; set(it._id, { category: c, excluded: c === 'Transfer', type: c === 'Income' ? 'income' : it.type }); }}>
+                      <select className="control" style={{ padding: '4px 8px' }} value={kindOf(it)}
+                        onChange={e => setKind(it._id, e.target.value as any)}>
+                        <option>Expense</option><option>Income</option><option>Transfer</option>
+                      </select>
+                    </td>
+                    <td>
+                      <select className="control" style={{ padding: '4px 8px' }} value={it.category} disabled={it.excluded}
+                        onChange={e => { const c = e.target.value; set(it._id, { category: c, excluded: c === 'Transfer', type: c === 'Income' ? 'income' : 'expense' }); }}>
                         {[...new Set([it.category, ...cats])].map(c => <option key={c} value={c}>{c}</option>)}
                       </select>
                     </td>

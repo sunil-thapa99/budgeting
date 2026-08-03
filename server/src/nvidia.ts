@@ -9,7 +9,8 @@ export const nvidia = new OpenAI({
   maxRetries: 1,
 });
 
-export const INSIGHTS_MODEL = process.env.INSIGHTS_MODEL || 'meta/llama-3.3-70b-instruct';
+// Fast + capable; the 70B models are frequently overloaded/slow on NVIDIA build.
+export const INSIGHTS_MODEL = process.env.INSIGHTS_MODEL || 'nvidia/llama-3.3-nemotron-super-49b-v1';
 export const VISION_MODEL = process.env.VISION_MODEL || 'meta/llama-3.2-90b-vision-instruct';
 // Small/fast model for bulk transaction categorization (easy task, high volume).
 export const CATEGORIZE_MODEL = process.env.CATEGORIZE_MODEL || 'meta/llama-3.1-8b-instruct';

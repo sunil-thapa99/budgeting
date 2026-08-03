@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import db from '../db.js';
-import { nvidia, INSIGHTS_MODEL, assertKey } from '../nvidia.js';
+import { nvidia, INSIGHTS_MODEL, CATEGORIZE_MODEL, assertKey } from '../nvidia.js';
 
 const router = Router();
 
@@ -39,16 +39,26 @@ Do not invent data that isn't present. Keep it under 200 words.`;
       ? `Budget data:\n${JSON.stringify(data)}\n\nQuestion: ${question}`
       : `Budget data:\n${JSON.stringify(data)}\n\nGive me insights.`;
 
-    const completion = await nvidia.chat.completions.create({
-      model: INSIGHTS_MODEL,
-      temperature: 0.4,
-      max_tokens: 600,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: user },
-      ],
-    });
-    res.json({ text: completion.choices[0]?.message?.content ?? '', model: INSIGHTS_MODEL });
+    const messages = [
+      { role: 'system' as const, content: system },
+      { role: 'user' as const, content: user },
+    ];
+    // Try the primary model with a bounded timeout; if NVIDIA is slow/overloaded,
+    // fall back to the fast small model so the user always gets a result.
+    let text = '', used = INSIGHTS_MODEL;
+    try {
+      const c = await nvidia.chat.completions.create(
+        { model: INSIGHTS_MODEL, temperature: 0.4, max_tokens: 600, messages },
+        { timeout: 40_000, maxRetries: 0 });
+      text = c.choices[0]?.message?.content ?? '';
+    } catch (e) {
+      const c = await nvidia.chat.completions.create(
+        { model: CATEGORIZE_MODEL, temperature: 0.4, max_tokens: 600, messages },
+        { timeout: 40_000, maxRetries: 1 });
+      text = c.choices[0]?.message?.content ?? '';
+      used = CATEGORIZE_MODEL + ' (fallback)';
+    }
+    res.json({ text, model: used });
   } catch (err) { next(err); }
 });
 

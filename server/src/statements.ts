@@ -73,46 +73,96 @@ function parseCSV(text: string): string[][] {
   return rows;
 }
 
-function extractCSV(buf: Buffer, account: string): RawRow[] {
+type CsvMap = {
+  date?: string; desc?: string; amount?: string;
+  debit?: string; credit?: string; type?: string; details?: string;
+  positiveIsOut: boolean; // for a single signed amount column
+};
+
+// Deterministic mapping from header names (covers most bank/card exports).
+function heuristicMap(headers: string[]): CsvMap {
+  const find = (re: RegExp) => headers.find(h => re.test(h.toLowerCase().trim()));
+  const details = find(/^details$/);
+  return {
+    date: find(/^trans.*date|transaction date|trans\. date/) || find(/posting date|post date|^date$/) || find(/date/),
+    desc: find(/description|payee|memo|merchant|^name$/) || headers[1],
+    amount: find(/^amount$/) || find(/amount/),
+    debit: find(/^debit/), credit: find(/^credit/),
+    type: find(/^type$/) || find(/^transaction type$/),
+    details,
+    positiveIsOut: !(details || find(/balance/)), // card: +charge=out; bank(has balance/details): +deposit=in
+  };
+}
+
+function buildRows(rows: Record<string, string>[], m: CsvMap, account: string): RawRow[] {
+  const out: RawRow[] = [];
+  for (const r of rows) {
+    const date = m.date ? usDate(r[m.date]) : null;
+    const description = (m.desc ? r[m.desc] : '').replace(/\s+/g, ' ').trim();
+    if (!date || !description) continue;
+
+    let amount: number, direction: 'out' | 'in';
+    if (m.debit || m.credit) {
+      const dv = Math.abs(parseFloat((r[m.debit!] || '').replace(/[^0-9.-]/g, '')) || 0);
+      const cv = Math.abs(parseFloat((r[m.credit!] || '').replace(/[^0-9.-]/g, '')) || 0);
+      if (dv > 0) { amount = dv; direction = 'out'; }
+      else if (cv > 0) { amount = cv; direction = 'in'; }
+      else continue;
+    } else if (m.amount) {
+      const raw = parseFloat((r[m.amount] || '').replace(/[^0-9.-]/g, ''));
+      if (!isFinite(raw) || raw === 0) continue;
+      amount = Math.abs(raw);
+      const isOut = m.details ? /debit/i.test(r[m.details])
+        : (raw > 0 ? m.positiveIsOut : !m.positiveIsOut);
+      direction = isOut ? 'out' : 'in';
+    } else continue;
+
+    out.push({ date, description, amount, direction, account, bankType: m.type ? r[m.type] : undefined });
+  }
+  return out;
+}
+
+// #2: when the heuristic doesn't recognize the layout, let the LLM map columns + sign.
+async function llmCsvMap(headers: string[], sample: string[][]): Promise<CsvMap | null> {
+  try {
+    assertKey();
+    const prompt = `A bank/credit-card statement CSV has these columns:
+${JSON.stringify(headers)}
+Sample rows:
+${sample.map(r => JSON.stringify(r)).join('\n')}
+
+Identify the columns. Reply with ONLY JSON:
+{"date": <header>, "description": <header>, "amount": <header or null>, "debit": <header or null>, "credit": <header or null>, "type": <header or null>, "positiveMeans": "out" | "in"}
+- "amount" = a single signed amount column (else null and use debit/credit).
+- "positiveMeans" = does a POSITIVE amount mean money OUT (a charge/purchase) or money IN (a deposit/payment)? For most credit cards a positive amount is a charge ("out"); for most checking exports a positive amount is a deposit ("in").`;
+    const c = await nvidia.chat.completions.create({
+      model: CATEGORIZE_MODEL, temperature: 0, max_tokens: 300,
+      messages: [{ role: 'user', content: prompt }],
+    }, { timeout: 30_000, maxRetries: 1 });
+    const t = c.choices[0]?.message?.content ?? '';
+    const mm = t.match(/\{[\s\S]*\}/);
+    if (!mm) return null;
+    const j = JSON.parse(mm[0]);
+    const has = (h: any) => typeof h === 'string' && headers.includes(h) ? h : undefined;
+    return {
+      date: has(j.date), desc: has(j.description), amount: has(j.amount),
+      debit: has(j.debit), credit: has(j.credit), type: has(j.type),
+      positiveIsOut: j.positiveMeans !== 'in',
+    };
+  } catch { return null; }
+}
+
+async function extractCSV(buf: Buffer, account: string): Promise<RawRow[]> {
   const table = parseCSV(buf.toString('utf8')).filter(r => r.some(c => c.trim() !== ''));
   if (table.length < 2) return [];
   const headers = table[0].map(h => h.trim());
   const rows = table.slice(1).map(r => Object.fromEntries(headers.map((h, i) => [h, (r[i] ?? '').trim()])));
-  const find = (re: RegExp) => headers.find(h => re.test(h.toLowerCase().trim()));
 
-  const dateH = find(/^trans.*date|transaction date|trans\. date/) || find(/posting date|post date|^date$/) || find(/date/);
-  const descH = find(/description|payee|memo|^name$/) || headers[1];
-  const amtH  = find(/^amount$/) || find(/amount/);
-  const detailsH = find(/^details$/);           // Chase: DEBIT/CREDIT
-  const typeH = find(/^type$/) || find(/^transaction type$/); // Chase: DEBIT_CARD / ACCT_XFER / ...
-  const debitH = find(/^debit/); const creditH = find(/^credit/);
-  // A "balance"/"details" column => bank export (positive = inflow). Otherwise a card (positive = charge).
-  const isBank = !!(detailsH || find(/balance/));
-
-  const out: RawRow[] = [];
-  for (const r of rows) {
-    const date = dateH ? usDate(r[dateH]) : null;
-    const description = (descH ? r[descH] : '').replace(/\s+/g, ' ').trim();
-    if (!date || !description) continue;
-
-    let amount: number, direction: 'out' | 'in';
-    if (debitH || creditH) {
-      const dv = Math.abs(parseFloat((r[debitH!] || '').replace(/[^0-9.-]/g, '')) || 0);
-      const cv = Math.abs(parseFloat((r[creditH!] || '').replace(/[^0-9.-]/g, '')) || 0);
-      if (dv > 0) { amount = dv; direction = 'out'; }
-      else if (cv > 0) { amount = cv; direction = 'in'; }
-      else continue;
-    } else {
-      const raw = parseFloat((r[amtH!] || '').replace(/[^0-9.-]/g, ''));
-      if (!isFinite(raw) || raw === 0) continue;
-      amount = Math.abs(raw);
-      const positiveIsOut = !isBank; // card: +charge=out; bank: +deposit=in
-      const isOut = detailsH
-        ? /debit/i.test(r[detailsH])
-        : (raw > 0 ? positiveIsOut : !positiveIsOut);
-      direction = isOut ? 'out' : 'in';
-    }
-    out.push({ date, description, amount, direction, account, bankType: typeH ? r[typeH] : undefined });
+  let out = buildRows(rows, heuristicMap(headers), account);
+  if (!out.length) {
+    console.error(`[stmt] unrecognized CSV layout (${headers.join(', ')}) — asking LLM to map columns`);
+    const map = await llmCsvMap(headers, table.slice(1, 4));
+    if (map) out = buildRows(rows, map, account);
   }
   return out;
 }
@@ -300,7 +350,7 @@ export async function parseStatement(file: { name: string; buffer: Buffer }): Pr
     raw = extractCapitalOnePDF(text, account);
     if (raw.length < 3) raw = await extractPDFviaLLM(text, account); // unknown layout fallback
   } else {
-    raw = extractCSV(file.buffer, account);
+    raw = await extractCSV(file.buffer, account);
   }
 
   // occurrence index so legitimately-identical rows keep distinct ext_ids, but re-imports match.
