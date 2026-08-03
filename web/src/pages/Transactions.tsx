@@ -7,36 +7,56 @@ const empty = (): TxInput => ({
   type: 'expense', amount: 0, category: '', description: '', method: '', source: 'manual',
 });
 
+const PAGE = 100;
+
 export default function Transactions({ month, onChange }: { month: string | null; onChange: () => void }) {
   const [rows, setRows] = useState<Tx[]>([]);
+  const [total, setTotal] = useState(0);
   const [cats, setCats] = useState<string[]>([]);
+  const [q, setQ] = useState('');
+  const [page, setPage] = useState(0);
   const [editing, setEditing] = useState<{ id?: number; data: TxInput } | null>(null);
+  const [managing, setManaging] = useState(false);
   const [err, setErr] = useState('');
 
-  const load = () => {
-    const q: Record<string, string> = {};
-    if (month) { q.from = `${month}-01`; q.to = `${month}-31`; }
-    api.transactions(q).then(setRows).catch(e => setErr(e.message));
-    api.categories().then(setCats).catch(() => {});
+  const loadCats = () => api.categories().then(setCats).catch(() => {});
+  const loadRows = () => {
+    const query: Record<string, string> = { limit: String(PAGE), offset: String(page * PAGE) };
+    if (month) { query.from = `${month}-01`; query.to = `${month}-31`; }
+    if (q.trim()) query.q = q.trim();
+    api.transactions(query).then(r => { setRows(r.rows); setTotal(r.total); }).catch(e => setErr(e.message));
   };
-  useEffect(load, [month]);
+  const reload = () => { loadRows(); loadCats(); };
+
+  useEffect(() => { loadCats(); }, []);
+  useEffect(() => setPage(0), [month, q]);            // any filter change -> back to first page
+  useEffect(() => { const t = setTimeout(loadRows, 250); return () => clearTimeout(t); }, [month, q, page]); // debounce search
 
   const save = async (data: TxInput, id?: number) => {
     try {
       if (id) await api.updateTx(id, data); else await api.createTx(data);
-      setEditing(null); load(); onChange();
+      setEditing(null); reload(); onChange();
     } catch (e: any) { setErr(e.message); }
   };
   const del = async (id: number) => {
     if (!confirm('Delete this transaction?')) return;
-    await api.deleteTx(id); load(); onChange();
+    await api.deleteTx(id); reload(); onChange();
   };
+  const rename = async (from: string, to: string) => {
+    await api.renameCategory(from, to); reload(); onChange();
+  };
+
+  const pages = Math.max(1, Math.ceil(total / PAGE));
 
   return (
     <div className="stack">
       <div className="row" style={{ justifyContent: 'space-between' }}>
         <div className="section-title" style={{ margin: 0 }}>Transactions {month ? `· ${month}` : ''}</div>
         <div className="row">
+          <input className="control" style={{ width: 200 }} placeholder="Search…" value={q}
+                 onChange={e => setQ(e.target.value)} />
+          <button className="btn ghost" onClick={() => setManaging(true)} title="Rename or merge categories">⚙ Categories</button>
+          <a className="btn ghost" href="/api/export?format=csv" download title="Download all transactions as CSV">⬇ Export</a>
           <ReceiptButton onExtract={d => setEditing({ data: d })} onError={setErr} />
           <button className="btn" onClick={() => setEditing({ data: empty() })}>+ Add</button>
         </div>
@@ -63,13 +83,78 @@ export default function Transactions({ month, onChange }: { month: string | null
               </tr>
             ))}
             {!rows.length && <tr><td colSpan={6} className="muted" style={{ textAlign: 'center', padding: 32 }}>
-              No transactions {month ? 'this month' : 'yet'}. Add one or import your sheet.</td></tr>}
+              {q.trim() ? 'No matches.' : `No transactions ${month ? 'this month' : 'yet'}. Add one or import your sheet.`}</td></tr>}
           </tbody>
         </table>
       </div>
 
+      {total > 0 && (
+        <div className="row" style={{ justifyContent: 'space-between' }}>
+          <div className="muted">
+            {total.toLocaleString()} transaction{total === 1 ? '' : 's'}
+            {pages > 1 && ` · showing ${page * PAGE + 1}–${Math.min((page + 1) * PAGE, total)}`}
+          </div>
+          {pages > 1 && (
+            <div className="row">
+              <button className="btn ghost" disabled={page === 0} onClick={() => setPage(p => p - 1)}>← Prev</button>
+              <span className="muted">Page {page + 1} / {pages}</span>
+              <button className="btn ghost" disabled={page >= pages - 1} onClick={() => setPage(p => p + 1)}>Next →</button>
+            </div>
+          )}
+        </div>
+      )}
+
       {editing && <TxForm init={editing.data} id={editing.id} cats={cats}
                     onClose={() => setEditing(null)} onSave={save} />}
+      {managing && <CategoryManager cats={cats} onRename={rename} onClose={() => setManaging(false)} />}
+    </div>
+  );
+}
+
+function CategoryManager({ cats, onRename, onClose }:
+  { cats: string[]; onRename: (from: string, to: string) => Promise<void>; onClose: () => void }) {
+  const [editing, setEditing] = useState<string | null>(null);
+  const [to, setTo] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (from: string) => {
+    const target = to.trim();
+    if (!target || target === from) { setEditing(null); return; }
+    if (cats.includes(target) && !confirm(`Merge "${from}" into existing "${target}"? This can't be undone.`)) return;
+    setBusy(true);
+    try { await onRename(from, target); setEditing(null); } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="card modal" onClick={e => e.stopPropagation()}>
+        <h3 style={{ marginBottom: 6 }}>Manage categories</h3>
+        <div className="sub" style={{ marginBottom: 12 }}>Rename to clean up sprawl; rename to an existing name to merge.</div>
+        <div className="stack" style={{ maxHeight: 360, overflow: 'auto', gap: 6 }}>
+          {cats.map(c => (
+            <div key={c} className="row" style={{ justifyContent: 'space-between', gap: 8 }}>
+              {editing === c ? (
+                <>
+                  <input className="control" style={{ flex: 1 }} autoFocus value={to}
+                         onChange={e => setTo(e.target.value)}
+                         onKeyDown={e => { if (e.key === 'Enter') submit(c); if (e.key === 'Escape') setEditing(null); }} />
+                  <button className="btn" disabled={busy} onClick={() => submit(c)}>{busy ? '…' : 'Save'}</button>
+                  <button className="btn ghost" onClick={() => setEditing(null)}>Cancel</button>
+                </>
+              ) : (
+                <>
+                  <span className="pill">{c}</span>
+                  <button className="btn ghost icon" title="Rename / merge" onClick={() => { setEditing(c); setTo(c); }}>✎</button>
+                </>
+              )}
+            </div>
+          ))}
+          {!cats.length && <div className="muted">No categories yet.</div>}
+        </div>
+        <div className="row" style={{ justifyContent: 'flex-end', marginTop: 12 }}>
+          <button className="btn ghost" onClick={onClose}>Close</button>
+        </div>
+      </div>
     </div>
   );
 }

@@ -31,6 +31,11 @@ Open http://localhost:5173.
   Re-importing **replaces** previously imported sheet data.
 - **Transactions** — add / edit / delete; **📷 Scan receipt** → vision LLM extracts merchant,
   total, date, category and pre-fills the form (images are downscaled in-browser before upload).
+  **⬇ Export** downloads every transaction as CSV (`/api/export?format=csv`, or `?format=json`) — your data is yours.
+- **Recurring** — detects subscriptions and recurring bills from your history by charge cadence
+  (weekly/biweekly/monthly/quarterly/yearly), showing average amount, normalized monthly cost, next
+  expected charge, and a total "recurring / month". Regularly-visited merchants (groceries) are filtered
+  out by an interval-regularity gate; stale ones (last charge too long ago) show as inactive.
 - **Dashboard** — KPIs (income / expenses / net / savings rate), spending by category,
   budget vs actual (green = within, red = over), income-vs-expense trend, and an **AI insights**
   panel you can also ask free-form questions.

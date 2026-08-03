@@ -397,7 +397,7 @@ function localCategory(desc: string): string | null {
 // ---------- learned merchant memory ---------------------------------------
 // Stable key for a merchant string: alpha-only, first two significant tokens.
 // Groups "WALMART STORE 04295 ..." and "WALMART STORE 00489 ..." to one key.
-function normalizeMerchant(desc: string): string {
+export function normalizeMerchant(desc: string): string {
   return desc.toUpperCase().replace(/[^A-Z ]+/g, ' ').replace(/\s+/g, ' ').trim()
     .split(' ').filter(t => t.length >= 2).slice(0, 2).join(' ');
 }

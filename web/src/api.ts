@@ -7,7 +7,18 @@ export type Tx = {
   description: string;
   method: string;
   source: string;
+  account?: string;
+  excluded?: number;
   created_at: string;
+};
+
+export type Recurring = {
+  monthlyTotal: number;
+  subscriptions: {
+    merchant: string; category: string; cadence: string;
+    avgAmount: number; monthlyCost: number; lastDate: string;
+    nextExpected: string; count: number; active: boolean;
+  }[];
 };
 
 export type Summary = {
@@ -49,8 +60,11 @@ export type TxInput = Omit<Tx, 'id' | 'created_at'>;
 export const api = {
   summary: (month?: string) => req<Summary>(`/api/summary${month ? `?month=${month}` : ''}`),
   transactions: (q: Record<string, string> = {}) =>
-    req<Tx[]>(`/api/transactions?${new URLSearchParams(q)}`),
+    req<{ rows: Tx[]; total: number }>(`/api/transactions?${new URLSearchParams(q)}`),
   categories: () => req<string[]>('/api/transactions/meta/categories'),
+  renameCategory: (from: string, to: string) =>
+    req<{ ok: boolean; moved: number }>('/api/transactions/meta/categories/rename', json({ from, to })),
+  recurring: () => req<Recurring>('/api/recurring'),
   createTx: (t: TxInput) => req<Tx>('/api/transactions', json(t)),
   updateTx: (id: number, t: TxInput) => req<Tx>(`/api/transactions/${id}`, { ...json(t), method: 'PUT' }),
   deleteTx: (id: number) => req<void>(`/api/transactions/${id}`, { method: 'DELETE' }),
