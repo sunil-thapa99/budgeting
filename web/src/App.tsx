@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useTheme } from './theme';
 import { api } from './api';
-import { monthLabel } from './util';
+import { monthLabel, CURRENCIES, getCurrency, setCurrency } from './util';
 import Dashboard from './pages/Dashboard';
 import Transactions from './pages/Transactions';
 import ImportPage from './pages/Import';
@@ -15,6 +15,7 @@ export default function App() {
   const [months, setMonths] = useState<string[]>([]);
   const [month, setMonth] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0); // bump to reload data after edits/import
+  const [cur, setCur] = useState(getCurrency()); // currency selection (drives re-render)
 
   useEffect(() => {
     api.summary().then(s => {
@@ -43,6 +44,10 @@ export default function App() {
             {months.map(m => <option key={m} value={m}>{monthLabel(m)}</option>)}
           </select>
         )}
+        <select className="control" value={cur} title="Display currency"
+          onChange={e => { setCurrency(e.target.value); setCur(e.target.value); }}>
+          {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
         <button className="btn icon ghost" title="Toggle theme" onClick={toggle}>{mode === 'dark' ? '☀' : '☾'}</button>
       </header>
 

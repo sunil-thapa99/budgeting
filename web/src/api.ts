@@ -28,6 +28,8 @@ export type ReceiptResult = {
   raw: string;
 };
 
+import { getCurrency } from './util';
+
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
   if (!res.ok) {
@@ -53,7 +55,7 @@ export const api = {
   updateTx: (id: number, t: TxInput) => req<Tx>(`/api/transactions/${id}`, { ...json(t), method: 'PUT' }),
   deleteTx: (id: number) => req<void>(`/api/transactions/${id}`, { method: 'DELETE' }),
   insights: (month: string | null, question?: string) =>
-    req<{ text: string; model: string }>('/api/insights', json({ month, question })),
+    req<{ text: string; model: string }>('/api/insights', json({ month, question, currency: getCurrency() })),
   scanReceipt: (image: string) => req<ReceiptResult>('/api/receipt', json({ image })),
   importPreview: (file: File) => {
     const fd = new FormData(); fd.append('file', file);

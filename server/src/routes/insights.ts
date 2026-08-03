@@ -27,7 +27,8 @@ router.post('/', async (req, res, next) => {
       WHERE b.month=? GROUP BY b.category, b.expected
       HAVING b.expected>0 OR actual>0 ORDER BY b.expected DESC`).all(month, month) : [];
 
-    const data = { scope: month || 'all-time', currency: 'USD', totals, byCategory: byCat, budgetVsActual: budget };
+    const currency = typeof req.body?.currency === 'string' ? req.body.currency : 'USD';
+    const data = { scope: month || 'all-time', currency, totals, byCategory: byCat, budgetVsActual: budget };
 
     const system = `You are a concise, practical personal-finance assistant.
 Analyze the user's budget JSON and give specific, actionable insights.

@@ -1,11 +1,20 @@
-// ponytail: single currency constant — change here (or make a setting later).
-export const CURRENCY = 'USD';
+export const CURRENCIES = ['USD', 'CAD', 'EUR', 'GBP', 'INR', 'AUD', 'JPY'] as const;
 
-const fmt = new Intl.NumberFormat('en-US', { style: 'currency', currency: CURRENCY, maximumFractionDigits: 2 });
-const fmt0 = new Intl.NumberFormat('en-US', { style: 'currency', currency: CURRENCY, maximumFractionDigits: 0 });
+// Display currency, persisted locally. money()/money0() read the current value each call,
+// so changing it and re-rendering updates every amount in the app.
+let _currency = localStorage.getItem('currency') || 'USD';
+export const getCurrency = () => _currency;
+export const setCurrency = (c: string) => { _currency = c; localStorage.setItem('currency', c); };
 
-export const money = (n: number) => fmt.format(n || 0);
-export const money0 = (n: number) => fmt0.format(n || 0);
+const cache = new Map<string, Intl.NumberFormat>();
+function nf(digits: number): Intl.NumberFormat {
+  const key = `${_currency}:${digits}`;
+  let f = cache.get(key);
+  if (!f) { f = new Intl.NumberFormat('en-US', { style: 'currency', currency: _currency, maximumFractionDigits: digits }); cache.set(key, f); }
+  return f;
+}
+export const money = (n: number) => nf(2).format(n || 0);
+export const money0 = (n: number) => nf(0).format(n || 0);
 export const pct = (n: number) => `${(n * 100).toFixed(0)}%`;
 
 export function monthLabel(ym: string): string {
