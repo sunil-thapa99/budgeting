@@ -204,23 +204,61 @@ function extractCapitalOnePDF(text: string, account: string): RawRow[] {
 
 async function extractPDFviaLLM(text: string, account: string): Promise<RawRow[]> {
   assertKey();
-  const prompt = `Extract every transaction from this credit-card/bank statement text.
-Return ONLY a JSON array. Each item: {"date":"YYYY-MM-DD","description":string,"amount":number,"direction":"out"|"in"}.
-"out" = money spent/charged/debited; "in" = payment/credit/deposit/refund. amount is a positive number.
-Ignore summary/fees/interest lines that aren't real transactions.\n\nSTATEMENT TEXT:\n${text.slice(0, 12000)}`;
-  const c = await nvidia.chat.completions.create({
-    model: INSIGHTS_MODEL, temperature: 0, max_tokens: 4000,
-    messages: [{ role: 'user', content: prompt }],
-  });
-  const t = c.choices[0]?.message?.content ?? '';
-  const m = t.match(/\[[\s\S]*\]/);
-  if (!m) return [];
-  try {
-    return (JSON.parse(m[0]) as any[])
-      .filter(r => r?.date && r?.amount)
-      .map(r => ({ date: r.date, description: String(r.description||'').trim(), amount: Math.abs(+r.amount),
-                   direction: r.direction === 'in' ? 'in' : 'out', account } as RawRow));
-  } catch { return []; }
+  // Keep only real transaction lines: they have BOTH a date and a currency amount.
+  // Summary/balance lines (Previous Balance, Credit Limit, Payments total) have an
+  // amount but no date, so this drops them — the #1 cause of phantom transactions.
+  const hasDate = /\b\d{1,2}\/\d{1,2}(\/\d{2,4})?\b|\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s+\d{1,2}\b/i;
+  const hasAmount = /\$?\s?\d[\d,]*\.\d{2}\b/;
+  const txLines = text.split('\n').filter(l => hasDate.test(l) && hasAmount.test(l));
+  if (!txLines.length) return [];
+
+  // Chunk the filtered lines (~8k chars/chunk) so nothing is truncated; run in parallel.
+  const chunks: string[] = [];
+  let buf = '';
+  for (const line of txLines) {
+    if (buf.length + line.length + 1 > 8000) { if (buf.trim()) chunks.push(buf); buf = ''; }
+    buf += line + '\n';
+  }
+  if (buf.trim()) chunks.push(buf);
+
+  // Ask the model to TRANSCRIBE the signed amount (reliable) rather than JUDGE direction (error-prone).
+  const parse = (body: string) => `Extract every transaction from this statement text.
+Return ONLY a JSON array. Each item: {"date":"YYYY-MM-DD","description":string,"amount":number}.
+amount must be NEGATIVE if the line shows a minus sign, parentheses, or "CR" (a payment/credit/refund);
+POSITIVE otherwise (a charge/purchase/debit). Copy the number exactly. Assume the statement's year for MM/DD dates.
+Each line here is one transaction. If a line isn't a transaction, skip it.
+
+TRANSACTION LINES:
+${body}`;
+
+  const perChunk = await Promise.all(chunks.map(async (body): Promise<RawRow[]> => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const c = await nvidia.chat.completions.create({
+          // non-reasoning model: emits the JSON array directly (reasoning models bury it in prose)
+          model: CATEGORIZE_MODEL, temperature: 0, max_tokens: 4000,
+          messages: [{ role: 'user', content: parse(body) }],
+        }, { timeout: 45_000, maxRetries: 0 });
+        const t = c.choices[0]?.message?.content ?? '';
+        const m = t.match(/\[[\s\S]*\]/);
+        if (!m) return [];
+        return (JSON.parse(m[0]) as any[])
+          .filter(r => r?.date && r?.amount != null && /^\d{4}-\d{2}-\d{2}$/.test(r.date))
+          .map(r => {
+            const signed = +r.amount;               // negative = credit/payment (card convention)
+            return { date: r.date, description: String(r.description || '').trim(),
+                     amount: Math.abs(signed), direction: signed < 0 ? 'in' : 'out', account } as RawRow;
+          });
+      } catch { /* retry once, then skip this chunk */ }
+    }
+    return [];
+  }));
+
+  // Line-boundary chunks don't overlap, so no cross-chunk de-dup needed here;
+  // the occurrence-aware ext_id at commit still makes re-imports idempotent.
+  const out = perChunk.flat();
+  console.error(`[stmt] PDF LLM extraction: ${chunks.length} chunk(s) -> ${out.length} transactions`);
+  return out;
 }
 
 // ---------- classification: transfers / card payments / income ------------
