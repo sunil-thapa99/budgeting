@@ -14,28 +14,34 @@ export default function Transactions({ month, onChange }: { month: string | null
   const [total, setTotal] = useState(0);
   const [cats, setCats] = useState<string[]>([]);
   const [q, setQ] = useState('');
+  const [cat, setCat] = useState('');
   const [page, setPage] = useState(0);
   const [editing, setEditing] = useState<{ id?: number; data: TxInput } | null>(null);
   const [managing, setManaging] = useState(false);
   const [splitting, setSplitting] = useState<Tx | null>(null);
   const [err, setErr] = useState('');
+  const [msg, setMsg] = useState('');
 
   const loadCats = () => api.categories().then(setCats).catch(() => {});
   const loadRows = () => {
     const query: Record<string, string> = { limit: String(PAGE), offset: String(page * PAGE) };
     if (month) { query.from = `${month}-01`; query.to = `${month}-31`; }
     if (q.trim()) query.q = q.trim();
+    if (cat) query.category = cat;
     api.transactions(query).then(r => { setRows(r.rows); setTotal(r.total); }).catch(e => setErr(e.message));
   };
   const reload = () => { loadRows(); loadCats(); };
 
   useEffect(() => { loadCats(); }, []);
-  useEffect(() => setPage(0), [month, q]);            // any filter change -> back to first page
-  useEffect(() => { const t = setTimeout(loadRows, 250); return () => clearTimeout(t); }, [month, q, page]); // debounce search
+  useEffect(() => setPage(0), [month, q, cat]);       // any filter change -> back to first page
+  useEffect(() => { const t = setTimeout(loadRows, 250); return () => clearTimeout(t); }, [month, q, cat, page]); // debounce search
 
   const save = async (data: TxInput, id?: number) => {
     try {
-      if (id) await api.updateTx(id, data); else await api.createTx(data);
+      if (id) {
+        const r = await api.updateTx(id, data);
+        setMsg(r.propagated ? `Also updated ${r.propagated} similar transaction${r.propagated === 1 ? '' : 's'}.` : '');
+      } else { await api.createTx(data); setMsg(''); }
       setEditing(null); reload(); onChange();
     } catch (e: any) { setErr(e.message); }
   };
@@ -56,6 +62,10 @@ export default function Transactions({ month, onChange }: { month: string | null
         <div className="row">
           <input className="control" style={{ width: 200 }} placeholder="Search…" value={q}
                  onChange={e => setQ(e.target.value)} />
+          <select className="control" value={cat} onChange={e => setCat(e.target.value)} title="Filter by category">
+            <option value="">All categories</option>
+            {cats.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
           <button className="btn ghost" onClick={() => setManaging(true)} title="Rename or merge categories">⚙ Categories</button>
           <a className="btn ghost" href="/api/export?format=csv" download title="Download all transactions as CSV">⬇ Export</a>
           <ReceiptButton onExtract={d => setEditing({ data: d })} onError={setErr} />
@@ -63,6 +73,7 @@ export default function Transactions({ month, onChange }: { month: string | null
         </div>
       </div>
       {err && <div className="card neg">{err}</div>}
+      {msg && <div className="card muted" style={{ padding: '8px 12px' }}>{msg}</div>}
 
       <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
         <table>
@@ -110,7 +121,8 @@ export default function Transactions({ month, onChange }: { month: string | null
 
       {editing && <TxForm init={editing.data} id={editing.id} cats={cats}
                     onClose={() => setEditing(null)} onSave={save} />}
-      {managing && <CategoryManager cats={cats} onRename={rename} onClose={() => setManaging(false)} />}
+      {managing && <CategoryManager cats={cats} onRename={rename}
+                      onRulesChanged={() => { reload(); onChange(); }} onClose={() => setManaging(false)} />}
       {splitting && <SplitModal tx={splitting} cats={cats}
                       onClose={() => setSplitting(null)}
                       onSaved={() => { setSplitting(null); reload(); onChange(); }} />}
@@ -186,8 +198,8 @@ function SplitModal({ tx, cats, onClose, onSaved }:
   );
 }
 
-function CategoryManager({ cats, onRename, onClose }:
-  { cats: string[]; onRename: (from: string, to: string) => Promise<void>; onClose: () => void }) {
+function CategoryManager({ cats, onRename, onRulesChanged, onClose }:
+  { cats: string[]; onRename: (from: string, to: string) => Promise<void>; onRulesChanged: () => void; onClose: () => void }) {
   const [editing, setEditing] = useState<string | null>(null);
   const [to, setTo] = useState('');
   const [busy, setBusy] = useState(false);
@@ -203,7 +215,7 @@ function CategoryManager({ cats, onRename, onClose }:
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="card modal" onClick={e => e.stopPropagation()}>
-        <Rules cats={cats} />
+        <Rules cats={cats} onChanged={onRulesChanged} />
         <h3 style={{ marginBottom: 6 }}>Rename / merge categories</h3>
         <div className="sub" style={{ marginBottom: 12 }}>Rename to clean up sprawl; rename to an existing name to merge.</div>
         <div className="stack" style={{ maxHeight: 360, overflow: 'auto', gap: 6 }}>
@@ -285,19 +297,24 @@ function TxForm({ init, id, cats, onClose, onSave }:
 }
 
 // Keyword rules: "any word starting with X → category Y", applied first when importing.
-function Rules({ cats }: { cats: string[] }) {
+function Rules({ cats, onChanged }: { cats: string[]; onChanged: () => void }) {
   const [rules, setRules] = useState<{ keyword: string; category: string }[]>([]);
   const [kw, setKw] = useState('');
   const [cat, setCat] = useState('');
   const [err, setErr] = useState('');
+  const [msg, setMsg] = useState('');
 
   const load = () => api.rules().then(setRules).catch(() => {});
   useEffect(() => { load(); }, []);
 
   const add = async () => {
-    setErr('');
-    try { await api.addRule(kw.trim(), cat.trim()); setKw(''); setCat(''); load(); }
-    catch (e: any) { setErr(e.message); }
+    setErr(''); setMsg('');
+    try {
+      const r = await api.addRule(kw.trim(), cat.trim());
+      setKw(''); setCat(''); load();
+      setMsg(r.applied ? `Rule added — updated ${r.applied} existing transaction${r.applied === 1 ? '' : 's'}.` : 'Rule added.');
+      onChanged();
+    } catch (e: any) { setErr(e.message); }
   };
   const del = async (keyword: string) => { await api.deleteRule(keyword); load(); };
 
@@ -326,6 +343,7 @@ function Rules({ cats }: { cats: string[] }) {
         <button className="btn" disabled={kw.trim().length < 2 || !cat.trim()} onClick={add}>Add</button>
       </div>
       {err && <div className="neg" style={{ marginTop: 6 }}>{err}</div>}
+      {msg && <div className="muted" style={{ marginTop: 6 }}>{msg}</div>}
     </div>
   );
 }

@@ -320,9 +320,9 @@ ${body}`;
 
 // ---------- classification: transfers / card payments / income ------------
 
-const ISSUERS = /(discover|capital one|chase|amex|american express|citi|synchrony|barclay|wells fargo|bank of america|boa|ally|sofi|visa|mastercard|cibc|rbc|td|scotiabank|bmo|tangerine)\b/i;
+const ISSUERS = /(discover|capital one|chase|amex|american express|citi|synchrony|barclay|wells fargo|bank of america|boa|visa|mastercard|cibc|rbc|td|scotiabank|bmo|tangerine)\b/i;
 const PAYMENT = /\b(payment|paymt|pymt|pmt|e-?payment|autopay|auto pay|thank you|(online|mobile) (pymt|pmt|payment))\b/i;
-const XFER    = /\b(zelle|quickpay|acct xfer|account transfer|online transfer|transfer (to|from)|wire (transfer|incoming|outgoing)|to sav|from sav|to chk|from chk|venmo|cash ?app|paypal|interac|e-?transfer|real time payment|ally|sofi|marcus)\b/i;
+const XFER    = /\b(zelle|quickpay|acct xfer|account transfer|online transfer|transfer (to|from)|wire (transfer|incoming|outgoing)|to sav|from sav|to chk|from chk|venmo|cash ?app|paypal|interac|e-?transfer|real time payment)\b/i;
 // Gambling/betting: gross deposits churn (you withdraw much of it), so treat as money-movement, not spend. Editable in review.
 const BETTING = /\b(draftkings|dk\*|fanduel|betfair|betmgm|caesars ?(sports|palace)|bet365|pointsbet|polymarket|underdog|prizepicks|bovada|sportsbook|sportsbk)/i;
 // Person-to-person apps (individual, not a company).
@@ -410,6 +410,22 @@ export function learnMerchant(desc: string, category: string) {
               ON CONFLICT(merchant) DO UPDATE SET category=excluded.category, updated_at=excluded.updated_at`)
     .run(key, category);
 }
+// Apply a category to every existing transaction with a similar description (same merchant key)
+// and un-exclude them — a category you chose means it's real, not a transfer. Returns rows changed.
+export function propagateCategory(database: typeof db, desc: string, category: string): number {
+  const key = normalizeMerchant(desc);
+  if (!key || !category) return 0;
+  const rows = database.prepare('SELECT id, description, category, excluded FROM transactions WHERE parent_id IS NULL').all() as
+    { id: number; description: string; category: string; excluded: number }[];
+  const upd = database.prepare('UPDATE transactions SET category=?, excluded=0 WHERE id=?');
+  let changed = 0;
+  for (const r of rows) {
+    if (normalizeMerchant(r.description) !== key) continue;
+    if (r.category !== category || r.excluded !== 0) { upd.run(category, r.id); changed++; }
+  }
+  return changed;
+}
+
 // Token-prefix keyword rules. A rule matches if any word in the description starts with
 // the keyword — so "cuis" hits "CUISINE" but "ally" does NOT hit "totally". Longest keyword wins.
 export function matchRule(desc: string, rules: { keyword: string; category: string }[]): string | null {
@@ -439,14 +455,12 @@ async function categorize(items: CatItem[], cats: string[]): Promise<Record<stri
   if (!list.length) return {};
 
   const result: Record<string, string> = {};
-  // 0) user keyword rules (explicit intent — highest priority)
-  const rules = lookupRules();
+  // (user keyword rules are applied upstream in parseStatement, ahead of the movement guard)
   // 1) learned merchant memory (consistent + improves from past edits)
   const mem = lookupMerchants(list.map(i => i.desc));
   // 2) local merchant dictionary (spending, money-out only)
   const remaining: CatItem[] = [];
   for (const it of list) {
-    const ruled = matchRule(it.desc, rules); if (ruled) { result[it.desc] = ruled; continue; }
     if (mem[it.desc]) { result[it.desc] = mem[it.desc]; continue; }
     if (it.dir === 'out') { const lc = localCategory(it.desc); if (lc) { result[it.desc] = lc; continue; } }
     remaining.push(it);
@@ -519,10 +533,16 @@ export async function parseStatement(file: { name: string; buffer: Buffer }): Pr
   const occ = new Map<string, number>();
   const cats = allowedCategories();
 
-  // rule pass first; everything else (both money-in and money-out) goes to categorize,
-  // which tries learned memory -> merchant dictionary -> LLM.
-  const pre = raw.map(r => ({ r, rule: ruleClassify(r) }));
-  const items = pre.filter(p => !p.rule).map(p => ({
+  // Your corrections are the source of truth. A keyword rule or a previously-learned
+  // category (from editing a record) wins over the built-in movement guard, so a fix you
+  // made once sticks on every future import instead of being re-guessed.
+  const rules = lookupRules();
+  const mem = lookupMerchants(raw.map(r => r.description));
+  const pre = raw.map(r => {
+    const forced = matchRule(r.description, rules) || mem[r.description] || null;
+    return { r, forced, rule: forced ? null : ruleClassify(r) };
+  });
+  const items = pre.filter(p => !p.forced && !p.rule).map(p => ({
     desc: p.r.description, dir: p.r.direction, account: p.r.account, amount: p.r.amount,
   }));
   console.error(`[stmt] ${file.name}: extracted ${raw.length}, categorizing ${items.length} rows…`);
@@ -533,13 +553,14 @@ export async function parseStatement(file: { name: string; buffer: Buffer }): Pr
   const existing = db.prepare(`SELECT ext_id FROM transactions WHERE ext_id IS NOT NULL`).all() as {ext_id:string}[];
   const known = new Set(existing.map(e => e.ext_id));
 
-  const proposed: ProposedTx[] = pre.map(({ r, rule }) => {
+  const proposed: ProposedTx[] = pre.map(({ r, forced, rule }) => {
     const key = `${r.account}|${r.date}|${r.amount.toFixed(2)}|${normDesc(r.description)}`;
     const n = occ.get(key) ?? 0; occ.set(key, n + 1);
     const extId = extIdFor(r, n);
 
     let type: 'expense'|'income', category: string, excluded: boolean, reason: string | undefined;
-    if (rule) { ({ type, category, excluded, reason } = rule); }
+    if (forced) { type = r.direction === 'in' ? 'income' : 'expense'; category = forced; excluded = false; reason = 'keyword rule'; }
+    else if (rule) { ({ type, category, excluded, reason } = rule); }
     else {
       const c = catMap[r.description] || (r.direction === 'in' ? 'Income' : 'Miscellaneous');
       if (c === 'Transfer') { type = r.direction === 'in' ? 'income' : 'expense'; category = 'Transfer'; excluded = true; reason = 'moved money (not spending)'; }
