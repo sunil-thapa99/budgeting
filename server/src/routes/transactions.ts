@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import db from '../db.js';
-import { learnMerchant } from '../statements.js';
+import { learnMerchant, propagateCategory } from '../statements.js';
 
 const router = Router();
 
@@ -49,11 +49,18 @@ router.post('/', (req, res) => {
 
 router.put('/:id', (req, res) => {
   const p = TxInput.parse(req.body);
+  const id = Number(req.params.id);
+  // excluded=0: assigning a category means it's real (undoes a wrong transfer/exclusion).
   db.prepare(
-    `UPDATE transactions SET date=?,type=?,amount=?,category=?,description=?,method=?,source=? WHERE id=?`
-  ).run(p.date, p.type, p.amount, p.category, p.description, p.method, p.source, Number(req.params.id));
-  if (p.description) learnMerchant(p.description, p.category); // fix once, remembered for future imports
-  res.json(db.prepare('SELECT * FROM transactions WHERE id=?').get(Number(req.params.id)));
+    `UPDATE transactions SET date=?,type=?,amount=?,category=?,description=?,method=?,source=?,excluded=0 WHERE id=?`
+  ).run(p.date, p.type, p.amount, p.category, p.description, p.method, p.source, id);
+  let propagated = 0;
+  if (p.description && p.category) {
+    learnMerchant(p.description, p.category);              // remember for future imports
+    propagated = propagateCategory(db, p.description, p.category); // apply to all OTHER similar existing rows
+  }
+  const row = db.prepare('SELECT * FROM transactions WHERE id=?').get(id);
+  res.json({ row, propagated });
 });
 
 router.delete('/:id', (req, res) => {

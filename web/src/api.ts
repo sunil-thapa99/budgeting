@@ -74,14 +74,14 @@ export const api = {
   renameCategory: (from: string, to: string) =>
     req<{ ok: boolean; moved: number }>('/api/transactions/meta/categories/rename', json({ from, to })),
   rules: () => req<{ keyword: string; category: string }[]>('/api/rules'),
-  addRule: (keyword: string, category: string) => req<{ ok: boolean }>('/api/rules', json({ keyword, category })),
+  addRule: (keyword: string, category: string) => req<{ ok: boolean; applied: number }>('/api/rules', json({ keyword, category })),
   deleteRule: (keyword: string) => req<void>(`/api/rules/${encodeURIComponent(keyword)}`, { method: 'DELETE' }),
   recurring: () => req<Recurring>('/api/recurring'),
   accounts: () => req<Accounts>('/api/accounts'),
   saveAccount: (name: string, type: string, opening_balance: number) =>
     req<{ ok: boolean }>(`/api/accounts/${encodeURIComponent(name)}`, { ...json({ type, opening_balance }), method: 'PUT' }),
   createTx: (t: TxInput) => req<Tx>('/api/transactions', json(t)),
-  updateTx: (id: number, t: TxInput) => req<Tx>(`/api/transactions/${id}`, { ...json(t), method: 'PUT' }),
+  updateTx: (id: number, t: TxInput) => req<{ row: Tx; propagated: number }>(`/api/transactions/${id}`, { ...json(t), method: 'PUT' }),
   deleteTx: (id: number) => req<void>(`/api/transactions/${id}`, { method: 'DELETE' }),
   splits: (id: number) => req<Tx[]>(`/api/transactions/${id}/splits`),
   saveSplit: (id: number, splits: { category: string; amount: number }[]) =>
