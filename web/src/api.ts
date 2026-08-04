@@ -73,6 +73,9 @@ export const api = {
   categories: () => req<string[]>('/api/transactions/meta/categories'),
   renameCategory: (from: string, to: string) =>
     req<{ ok: boolean; moved: number }>('/api/transactions/meta/categories/rename', json({ from, to })),
+  rules: () => req<{ keyword: string; category: string }[]>('/api/rules'),
+  addRule: (keyword: string, category: string) => req<{ ok: boolean }>('/api/rules', json({ keyword, category })),
+  deleteRule: (keyword: string) => req<void>(`/api/rules/${encodeURIComponent(keyword)}`, { method: 'DELETE' }),
   recurring: () => req<Recurring>('/api/recurring'),
   accounts: () => req<Accounts>('/api/accounts'),
   saveAccount: (name: string, type: string, opening_balance: number) =>

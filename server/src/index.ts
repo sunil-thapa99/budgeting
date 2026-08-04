@@ -11,6 +11,7 @@ import statements from './routes/statements.js';
 import recurring from './routes/recurring.js';
 import exportTx from './routes/export.js';
 import accounts from './routes/accounts.js';
+import rules from './routes/rules.js';
 
 const app = express();
 app.use(cors());
@@ -26,6 +27,7 @@ app.use('/api/statements', statements);
 app.use('/api/recurring', recurring);
 app.use('/api/export', exportTx);
 app.use('/api/accounts', accounts);
+app.use('/api/rules', rules);
 
 // central error handler -> JSON (zod, NVIDIA, etc.)
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

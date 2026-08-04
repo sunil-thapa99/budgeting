@@ -203,7 +203,8 @@ function CategoryManager({ cats, onRename, onClose }:
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="card modal" onClick={e => e.stopPropagation()}>
-        <h3 style={{ marginBottom: 6 }}>Manage categories</h3>
+        <Rules cats={cats} />
+        <h3 style={{ marginBottom: 6 }}>Rename / merge categories</h3>
         <div className="sub" style={{ marginBottom: 12 }}>Rename to clean up sprawl; rename to an existing name to merge.</div>
         <div className="stack" style={{ maxHeight: 360, overflow: 'auto', gap: 6 }}>
           {cats.map(c => (
@@ -279,6 +280,52 @@ function TxForm({ init, id, cats, onClose, onSave }:
           <button className="btn" disabled={!d.amount || !d.category} onClick={() => onSave(d, id)}>Save</button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// Keyword rules: "any word starting with X → category Y", applied first when importing.
+function Rules({ cats }: { cats: string[] }) {
+  const [rules, setRules] = useState<{ keyword: string; category: string }[]>([]);
+  const [kw, setKw] = useState('');
+  const [cat, setCat] = useState('');
+  const [err, setErr] = useState('');
+
+  const load = () => api.rules().then(setRules).catch(() => {});
+  useEffect(() => { load(); }, []);
+
+  const add = async () => {
+    setErr('');
+    try { await api.addRule(kw.trim(), cat.trim()); setKw(''); setCat(''); load(); }
+    catch (e: any) { setErr(e.message); }
+  };
+  const del = async (keyword: string) => { await api.deleteRule(keyword); load(); };
+
+  return (
+    <div style={{ marginBottom: 18 }}>
+      <h3 style={{ marginBottom: 6 }}>Keyword rules</h3>
+      <div className="sub" style={{ marginBottom: 10 }}>
+        Force a category when a description word starts with your keyword (e.g. <b>cuis</b> → Dining Out).
+        Applied to every import — beats auto-guessing.
+      </div>
+      {rules.map(r => (
+        <div key={r.keyword} className="row" style={{ justifyContent: 'space-between', gap: 8, marginBottom: 4 }}>
+          <div className="row" style={{ gap: 8 }}>
+            <span className="pill">{r.keyword}</span><span className="muted">→</span><span className="pill">{r.category}</span>
+          </div>
+          <button className="btn ghost icon" title="Delete rule" onClick={() => del(r.keyword)}>🗑</button>
+        </div>
+      ))}
+      <div className="row" style={{ gap: 8, marginTop: 8 }}>
+        <input className="control" style={{ flex: 1 }} placeholder="keyword (e.g. ally)" value={kw}
+               onChange={e => setKw(e.target.value)} />
+        <span className="muted">→</span>
+        <input className="control" style={{ flex: 1 }} list="rulecats" placeholder="category" value={cat}
+               onChange={e => setCat(e.target.value)} />
+        <datalist id="rulecats">{cats.map(c => <option key={c} value={c} />)}</datalist>
+        <button className="btn" disabled={kw.trim().length < 2 || !cat.trim()} onClick={add}>Add</button>
+      </div>
+      {err && <div className="neg" style={{ marginTop: 6 }}>{err}</div>}
     </div>
   );
 }
