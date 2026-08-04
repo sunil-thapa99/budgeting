@@ -115,6 +115,7 @@ export function renameCategory(database: typeof db, from: string, to: string): n
   try {
     const moved = database.prepare('UPDATE transactions SET category=? WHERE category=?').run(to, from).changes;
     database.prepare('UPDATE merchant_categories SET category=? WHERE category=?').run(to, from);
+    database.prepare('UPDATE category_rules SET category=? WHERE category=?').run(to, from);
 
     // Budgets have PK (month, category) — merge instead of blindly renaming into a conflict.
     const fromRows = database.prepare('SELECT month, expected FROM budgets WHERE category=?').all(from) as { month: string; expected: number }[];

@@ -410,6 +410,19 @@ export function learnMerchant(desc: string, category: string) {
               ON CONFLICT(merchant) DO UPDATE SET category=excluded.category, updated_at=excluded.updated_at`)
     .run(key, category);
 }
+// Token-prefix keyword rules. A rule matches if any word in the description starts with
+// the keyword — so "cuis" hits "CUISINE" but "ally" does NOT hit "totally". Longest keyword wins.
+export function matchRule(desc: string, rules: { keyword: string; category: string }[]): string | null {
+  const tokens = desc.toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean);
+  let best: { keyword: string; category: string } | null = null;
+  for (const r of rules) {
+    if (tokens.some(t => t.startsWith(r.keyword)) && (!best || r.keyword.length > best.keyword.length)) best = r;
+  }
+  return best?.category ?? null;
+}
+function lookupRules(): { keyword: string; category: string }[] {
+  return db.prepare('SELECT keyword, category FROM category_rules').all() as { keyword: string; category: string }[];
+}
 function lookupMerchants(descs: string[]): Record<string, string> {
   const stmt = db.prepare(`SELECT category FROM merchant_categories WHERE merchant=?`);
   const out: Record<string, string> = {};
@@ -426,11 +439,14 @@ async function categorize(items: CatItem[], cats: string[]): Promise<Record<stri
   if (!list.length) return {};
 
   const result: Record<string, string> = {};
+  // 0) user keyword rules (explicit intent — highest priority)
+  const rules = lookupRules();
   // 1) learned merchant memory (consistent + improves from past edits)
   const mem = lookupMerchants(list.map(i => i.desc));
   // 2) local merchant dictionary (spending, money-out only)
   const remaining: CatItem[] = [];
   for (const it of list) {
+    const ruled = matchRule(it.desc, rules); if (ruled) { result[it.desc] = ruled; continue; }
     if (mem[it.desc]) { result[it.desc] = mem[it.desc]; continue; }
     if (it.dir === 'out') { const lc = localCategory(it.desc); if (lc) { result[it.desc] = lc; continue; } }
     remaining.push(it);

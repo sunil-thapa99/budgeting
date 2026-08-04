@@ -63,9 +63,11 @@ Open http://localhost:5173.
 | Income | `PAYROLL`, company deposits, refunds, rewards | Income |
 | Betting | `DRAFTKINGS`, `FANDUEL`, `POLYMARKET` | Excluded by default (churn) — re-include if you count it as spending |
 
-Classification is a **hybrid** (the industry-standard approach): deterministic rules for the
-money-movement guards above (they must be reliable or totals break), a **learned merchant→category
-memory** that improves from your edits, and an LLM for the long tail with direction/amount context
+Classification is a **hybrid** (the industry-standard approach): user **keyword rules** (highest
+priority — "any description word starting with `cuis` → Dining", managed under Transactions → ⚙
+Categories), deterministic rules for the money-movement guards above (they must be reliable or totals
+break), a **learned merchant→category memory** that improves from your edits, and an LLM for the long
+tail with direction/amount context
 (money-in is Income from a company vs Reimbursement from a person). Named investing apps are
 guaranteed by rule; unknown ones are caught by the LLM. Everything is editable in the review
 screen — nothing is final until you import, and any edit is remembered for next time.

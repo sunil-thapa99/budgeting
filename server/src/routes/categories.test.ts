@@ -8,6 +8,8 @@ db.exec(`
   CREATE TABLE transactions (id INTEGER PRIMARY KEY, category TEXT);
   CREATE TABLE budgets (month TEXT, category TEXT, expected REAL, PRIMARY KEY (month, category));
   CREATE TABLE merchant_categories (merchant TEXT PRIMARY KEY, category TEXT);
+  CREATE TABLE category_rules (keyword TEXT PRIMARY KEY, category TEXT);
+  INSERT INTO category_rules VALUES ('CUIS','groceries');
   INSERT INTO transactions (category) VALUES ('groceries'), ('groceries'), ('Groceries'), ('Rent');
   INSERT INTO budgets VALUES ('2026-07','groceries',100), ('2026-07','Groceries',400), ('2026-08','groceries',150);
   INSERT INTO merchant_categories VALUES ('WHOLE FOODS','groceries');
@@ -28,5 +30,8 @@ assert.equal((db.prepare(`SELECT COUNT(*) n FROM budgets WHERE category='groceri
 
 const mc = db.prepare(`SELECT category FROM merchant_categories WHERE merchant='WHOLE FOODS'`).get() as { category: string };
 assert.equal(mc.category, 'Groceries', 'learned merchant memory follows the rename');
+
+const rule = db.prepare(`SELECT category FROM category_rules WHERE keyword='CUIS'`).get() as { category: string };
+assert.equal(rule.category, 'Groceries', 'keyword rules follow the rename too');
 
 console.log('categories.test.ts: all assertions passed');

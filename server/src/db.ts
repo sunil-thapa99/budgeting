@@ -37,6 +37,14 @@ db.exec(`
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- User keyword rules: if any word in a description starts with the keyword, force the category.
+  -- Highest-priority signal in categorization — beats learned memory and the LLM.
+  CREATE TABLE IF NOT EXISTS category_rules (
+    keyword    TEXT PRIMARY KEY,  -- stored uppercase; token-prefix match
+    category   TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
   -- User-configured metadata for an account (opening balance + kind). Accounts
   -- themselves are discovered from transactions.account; this just annotates them.
   CREATE TABLE IF NOT EXISTS accounts (
