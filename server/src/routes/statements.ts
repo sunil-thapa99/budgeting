@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import { parseStatement, commitStatement, allowedCategories, type ProposedTx } from '../statements.js';
+import { withUserCtx } from '../auth.js';
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024, files: 12 } });
@@ -10,7 +11,7 @@ router.get('/categories', async (_req, res, next) => {
 });
 
 // POST /api/statements/preview  (multipart: files[]) -> proposed transactions per file, NO writes
-router.post('/preview', upload.array('files'), async (req, res, next) => {
+router.post('/preview', upload.array('files'), withUserCtx, async (req, res, next) => {
   try {
     const files = (req.files as Express.Multer.File[]) || [];
     if (!files.length) return res.status(400).json({ error: 'Upload one or more statement files (.csv/.pdf).' });

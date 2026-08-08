@@ -2,6 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import * as XLSX from 'xlsx';
 import { tx, uid } from '../db.js';
+import { withUserCtx } from '../auth.js';
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
@@ -135,7 +136,7 @@ function parseWorkbook(buf: Buffer, only?: string[]): Parsed[] {
 }
 
 // POST /api/import/preview  (multipart: file) -> per-tab counts, no writes
-router.post('/preview', upload.single('file'), (req, res) => {
+router.post('/preview', upload.single('file'), withUserCtx, (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Upload an .xlsx file as "file".' });
   const parsed = parseWorkbook(req.file.buffer);
   res.json(parsed.map(p => ({
@@ -146,7 +147,7 @@ router.post('/preview', upload.single('file'), (req, res) => {
 });
 
 // POST /api/import  (multipart: file, sheets=JSON array) -> commit
-router.post('/', upload.single('file'), async (req, res, next) => {
+router.post('/', upload.single('file'), withUserCtx, async (req, res, next) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'Upload an .xlsx file as "file".' });
     let only: string[] | undefined;
