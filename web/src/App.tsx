@@ -23,6 +23,7 @@ export default function App() {
   const [month, setMonth] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0); // bump to reload data after edits/import
   const [cur, setCur] = useState(getCurrency()); // currency selection (drives re-render)
+  const [menuOpen, setMenuOpen] = useState(false); // mobile nav drawer
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => { setSession(data.session); setAuthReady(true); });
@@ -43,18 +44,21 @@ export default function App() {
   if (!session) return <Auth />;
 
   const bump = () => setRefresh(r => r + 1);
+  const go = (v: View) => { setView(v); setMenuOpen(false); };
 
   return (
     <div className="app">
       <header className="topbar">
         <div className="brand"><span className="dot" /> Budget</div>
-        <nav className="nav">
-          <button className={view === 'dashboard' ? 'active' : ''} onClick={() => setView('dashboard')}>Dashboard</button>
-          <button className={view === 'transactions' ? 'active' : ''} onClick={() => setView('transactions')}>Transactions</button>
-          <button className={view === 'recurring' ? 'active' : ''} onClick={() => setView('recurring')}>Recurring</button>
-          <button className={view === 'accounts' ? 'active' : ''} onClick={() => setView('accounts')}>Net worth</button>
-          <button className={view === 'statements' ? 'active' : ''} onClick={() => setView('statements')}>Statements</button>
-          <button className={view === 'import' ? 'active' : ''} onClick={() => setView('import')}>Import sheet</button>
+        <button className="btn icon ghost menu-toggle" aria-label="Menu" aria-expanded={menuOpen}
+          onClick={() => setMenuOpen(o => !o)}>{menuOpen ? '✕' : '☰'}</button>
+        <nav className={`nav ${menuOpen ? 'open' : ''}`}>
+          <button className={view === 'dashboard' ? 'active' : ''} onClick={() => go('dashboard')}>Dashboard</button>
+          <button className={view === 'transactions' ? 'active' : ''} onClick={() => go('transactions')}>Transactions</button>
+          <button className={view === 'recurring' ? 'active' : ''} onClick={() => go('recurring')}>Recurring</button>
+          <button className={view === 'accounts' ? 'active' : ''} onClick={() => go('accounts')}>Net worth</button>
+          <button className={view === 'statements' ? 'active' : ''} onClick={() => go('statements')}>Statements</button>
+          <button className={view === 'import' ? 'active' : ''} onClick={() => go('import')}>Import sheet</button>
         </nav>
         <div className="spacer" />
         {(view === 'dashboard' || view === 'transactions') && months.length > 0 && (
