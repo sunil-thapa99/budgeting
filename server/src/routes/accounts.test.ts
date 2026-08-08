@@ -1,25 +1,26 @@
 import assert from 'node:assert';
-import { DatabaseSync } from 'node:sqlite';
-import { accountsSummary } from './accounts.js';
+import { computeAccounts } from './accounts.js';
 
 // Run: cd server && npx tsx src/routes/accounts.test.ts
-const db = new DatabaseSync(':memory:');
-db.exec(`
-  CREATE TABLE transactions (id INTEGER PRIMARY KEY, date TEXT, type TEXT, amount REAL, account TEXT);
-  CREATE TABLE accounts (name TEXT PRIMARY KEY, type TEXT, opening_balance REAL, updated_at TEXT);
-  INSERT INTO accounts VALUES ('Chase','asset',1000,''), ('Capital One','credit',0,'');
-  -- Chase: +3000 income, -2500 expense  -> 1000 + 500 = 1500
-  INSERT INTO transactions (date,type,amount,account) VALUES
-    ('2026-07-01','income',3000,'Chase'),
-    ('2026-07-20','expense',2500,'Chase'),
-    -- Capital One card: spend 800, pay 300 (a credit) -> 0 - 800 + 300 = -500 (debt)
-    ('2026-07-05','expense',800,'Capital One'),
-    ('2026-07-28','income',300,'Capital One'),
-    -- Discover discovered from transactions, never configured -> opening 0, balance -120
-    ('2026-08-02','expense',120,'Discover');
-`);
+// Tests the pure balance/net-worth core (the DB fetch is a thin wrapper around it).
+//   Chase (asset, opening 1000): +3000 income −2500 expense -> flow 500 -> balance 1500
+//   Capital One (credit, opening 0): spend 800, pay 300 -> flow −500 -> balance −500 (debt)
+//   Discover (discovered, unconfigured): −120 -> balance −120
+const cfg = [
+  { name: 'Chase', type: 'asset', opening_balance: 1000 },
+  { name: 'Capital One', type: 'credit', opening_balance: 0 },
+];
+const flows = [
+  { name: 'Chase', flow: 500 },
+  { name: 'Capital One', flow: -500 },
+  { name: 'Discover', flow: -120 },
+];
+const monthly = [
+  { month: '2026-07', delta: 0 },     // Chase +500 and Capital One −500 net out
+  { month: '2026-08', delta: -120 },  // Discover expense
+];
 
-const { accounts, netWorth, series } = accountsSummary(db as any);
+const { accounts, netWorth, series } = computeAccounts(cfg, flows, monthly);
 
 const chase = accounts.find(a => a.name === 'Chase')!;
 assert.equal(chase.balance, 1500, 'asset balance = opening + income - expense');
@@ -32,6 +33,6 @@ assert(disc && !disc.configured && disc.balance === -120, 'discovered-but-unconf
 
 assert.equal(netWorth, 1500 - 500 - 120, 'net worth = sum of balances');
 assert.equal(series[series.length - 1].netWorth, netWorth, 'series ends at current net worth');
-assert(series.length === 2, 'two months of activity -> two points'); // 2026-07, 2026-08
+assert(series.length === 2, 'two months of activity -> two points');
 
 console.log('accounts.test.ts: all assertions passed');

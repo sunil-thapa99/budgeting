@@ -1,73 +1,66 @@
-import { DatabaseSync } from 'node:sqlite';
+import pg from 'pg';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import 'dotenv/config';
 
-// Built-in Node SQLite (node:sqlite) — no native build step. Node >= 22.5.
-const db = new DatabaseSync(process.env.DB_PATH || './budget.db');
+// Postgres (Supabase). Backend connects with the service role, so it scopes every
+// query by user_id in code (see uid()); RLS is defense-in-depth on top of that.
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS transactions (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    date        TEXT    NOT NULL,              -- ISO yyyy-mm-dd
-    type        TEXT    NOT NULL DEFAULT 'expense',  -- 'expense' | 'income'
-    amount      REAL    NOT NULL,              -- always positive
-    category    TEXT    NOT NULL DEFAULT 'Uncategorized',
-    description TEXT    NOT NULL DEFAULT '',
-    method      TEXT    NOT NULL DEFAULT '',   -- cash / card / bank ...
-    source      TEXT    NOT NULL DEFAULT 'manual', -- manual | receipt | import | statement
-    account     TEXT    NOT NULL DEFAULT '',   -- e.g. "Discover", "Chase Checking", "Capital One"
-    ext_id      TEXT,                          -- stable dedupe hash for imported rows
-    excluded    INTEGER NOT NULL DEFAULT 0,    -- 1 = transfer/card-payment, ignored in totals
-    created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
-  );
-  CREATE INDEX IF NOT EXISTS idx_tx_date ON transactions(date);
+// Return JS numbers/strings, not driver defaults, so the rest of the code is unchanged:
+pg.types.setTypeParser(1700, parseFloat);          // numeric  -> number (money)
+pg.types.setTypeParser(20, (v) => parseInt(v, 10)); // int8/bigint -> number (ids, counts)
+pg.types.setTypeParser(1082, (v) => v);            // date -> keep 'YYYY-MM-DD' string
 
-  -- Monthly expected/budget amount per category (from the sheet's "Expected Amount")
-  CREATE TABLE IF NOT EXISTS budgets (
-    month    TEXT NOT NULL,   -- 'YYYY-MM'
-    category TEXT NOT NULL,
-    expected REAL NOT NULL DEFAULT 0,
-    PRIMARY KEY (month, category)
-  );
+const url = process.env.DATABASE_URL || '';
+const pool = new pg.Pool({
+  connectionString: url,
+  // Supabase requires TLS; local Postgres doesn't. ponytail: rejectUnauthorized:false is
+  // fine for Supabase's managed cert — tighten with a CA bundle if you self-host.
+  ssl: url.includes('localhost') || url.includes('127.0.0.1') ? false : { rejectUnauthorized: false },
+});
 
-  -- Learned merchant -> category memory. Populated by imports and by user edits;
-  -- reused so categorization is consistent across imports and improves over time.
-  CREATE TABLE IF NOT EXISTS merchant_categories (
-    merchant   TEXT PRIMARY KEY,  -- normalized merchant key
-    category   TEXT NOT NULL,
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
+// The old sqlite code used `?` placeholders; rewrite to Postgres `$1,$2,...` positionally.
+// (No SQL string in this codebase contains a literal `?`, so this is safe.)
+const subst = (sql: string) => { let i = 0; return sql.replace(/\?/g, () => '$' + ++i); };
 
-  -- User keyword rules: if any word in a description starts with the keyword, force the category.
-  -- Highest-priority signal in categorization — beats learned memory and the LLM.
-  CREATE TABLE IF NOT EXISTS category_rules (
-    keyword    TEXT PRIMARY KEY,  -- stored uppercase; token-prefix match
-    category   TEXT NOT NULL,
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
+type Q = (sql: string, params?: any[]) => Promise<any>;
+type Handle = {
+  all: <T = any>(sql: string, params?: any[]) => Promise<T[]>;
+  get: <T = any>(sql: string, params?: any[]) => Promise<T | undefined>;
+  run: (sql: string, params?: any[]) => Promise<{ changes: number; rows: any[] }>;
+};
+const bind = (q: Q): Handle => ({
+  all: async (sql, params = []) => (await q(subst(sql), params)).rows,
+  get: async (sql, params = []) => (await q(subst(sql), params)).rows[0],
+  run: async (sql, params = []) => { const r = await q(subst(sql), params); return { changes: r.rowCount ?? 0, rows: r.rows }; },
+});
 
-  -- User-configured metadata for an account (opening balance + kind). Accounts
-  -- themselves are discovered from transactions.account; this just annotates them.
-  CREATE TABLE IF NOT EXISTS accounts (
-    name            TEXT PRIMARY KEY,
-    type            TEXT NOT NULL DEFAULT 'asset',  -- asset | credit | investment | cash
-    opening_balance REAL NOT NULL DEFAULT 0,        -- balance before the first recorded transaction
-    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-`);
+/** Default handle — one query, its own pooled connection. */
+export const db = bind((sql, params) => pool.query(sql, params));
 
-// Migrate an older DB that predates the statement columns (SQLite has no ADD COLUMN IF NOT EXISTS).
-for (const [col, def] of [
-  ['account', `TEXT NOT NULL DEFAULT ''`],
-  ['ext_id', `TEXT`],
-  ['excluded', `INTEGER NOT NULL DEFAULT 0`],
-  ['parent_id', `INTEGER`],  // set on split children -> they re-slice the parent's amount by category
-] as const) {
-  try { db.exec(`ALTER TABLE transactions ADD COLUMN ${col} ${def}`); } catch { /* already exists */ }
+/** Run `fn` inside a single transaction; every query in it uses the same connection. */
+export async function tx<T>(fn: (h: Handle) => Promise<T>): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const out = await fn(bind((sql, params) => client.query(sql, params)));
+    await client.query('COMMIT');
+    return out;
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
 }
-try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_tx_extid ON transactions(ext_id) WHERE ext_id IS NOT NULL`); } catch {}
-try { db.exec(`CREATE INDEX IF NOT EXISTS idx_tx_parent ON transactions(parent_id)`); } catch {}
 
-export default db;
+// Current request's user, carried through async calls so DB helpers can scope by it
+// without threading userId through every function signature.
+export const authCtx = new AsyncLocalStorage<{ userId: string }>();
+export function uid(): string {
+  const s = authCtx.getStore();
+  if (!s) throw Object.assign(new Error('No auth context'), { status: 401 });
+  return s.userId;
+}
 
 export type Transaction = {
   id: number;

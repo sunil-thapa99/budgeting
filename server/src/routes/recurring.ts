@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import db from '../db.js';
+import { db, uid } from '../db.js';
 import { normalizeMerchant } from '../statements.js';
 
 const router = Router();
@@ -18,12 +18,13 @@ const CADENCES: [number, number, string, number][] = [
 type Row = { date: string; amount: number; category: string; description: string };
 
 // GET /api/recurring -> detected subscriptions + total monthly cost of active ones.
-router.get('/', (_req, res) => {
-  const rows = db.prepare(
-    `SELECT date, amount, category, description FROM transactions
-     WHERE type='expense' AND excluded=0 ORDER BY date`
-  ).all() as Row[];
-  res.json(detectRecurring(rows, Date.now()));
+router.get('/', async (_req, res, next) => {
+  try {
+    const rows = await db.all<Row>(
+      `SELECT date, amount, category, description FROM budget_app_transactions
+       WHERE user_id=? AND type='expense' AND excluded=0 ORDER BY date`, [uid()]);
+    res.json(detectRecurring(rows, Date.now()));
+  } catch (err) { next(err); }
 });
 
 // Pure so it's testable without a DB. `rows` must be date-ascending.

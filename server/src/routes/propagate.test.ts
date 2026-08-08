@@ -1,32 +1,24 @@
 import assert from 'node:assert';
-import { DatabaseSync } from 'node:sqlite';
-import { propagateCategory } from '../statements.js';
+import { planPropagation } from '../statements.js';
 
 // Run: cd server && npx tsx src/routes/propagate.test.ts
-const db = new DatabaseSync(':memory:');
-db.exec(`
-  CREATE TABLE transactions (id INTEGER PRIMARY KEY, description TEXT, category TEXT, excluded INTEGER, parent_id INTEGER);
-  INSERT INTO transactions (description,category,excluded,parent_id) VALUES
-    ('ALLY FINANCIAL PAYMENT','Transfer',1,NULL),   -- the one the user is editing (already set below)
-    ('ALLY FINANCIAL PMT 0099','Transfer',1,NULL),  -- a twin -> must follow
-    ('WALMART SUPERCENTER','Groceries',0,NULL),     -- unrelated -> untouched
-    ('ALLY BANK CHILD','Transfer',1,1);             -- split child -> skipped
-`);
+// Tests the pure core: which rows follow a correction (same merchant key, actually changing).
+// The DB wrapper (propagateCategory) just SELECTs parents then UPDATEs these ids.
+const rows = [
+  { id: 1, description: 'ALLY FINANCIAL PAYMENT', category: 'Transfer', excluded: 1 },  // the edited one
+  { id: 2, description: 'ALLY FINANCIAL PMT 0099', category: 'Transfer', excluded: 1 }, // twin -> follows
+  { id: 3, description: 'WALMART SUPERCENTER', category: 'Groceries', excluded: 0 },     // unrelated -> untouched
+  // (split children are excluded by the SELECT's `parent_id IS NULL`, so they never reach here)
+];
 
-// User corrected the first ALLY to Transportation; propagate to all similar.
-const changed = propagateCategory(db as any, 'ALLY FINANCIAL PAYMENT', 'Transportation');
-assert.equal(changed, 2, 'both ALLY FINANCIAL parents follow (same merchant key), child + WALMART skipped');
+const ids = planPropagation(rows, 'ALLY FINANCIAL PAYMENT', 'Transportation');
+assert.deepEqual(ids.sort(), [1, 2], 'both ALLY FINANCIAL rows follow (same merchant key); WALMART skipped');
 
-const ally = db.prepare(`SELECT category, excluded FROM transactions WHERE description LIKE 'ALLY FINANCIAL%'`).all() as { category: string; excluded: number }[];
-assert(ally.every(r => r.category === 'Transportation' && r.excluded === 0), 'twins recategorized and un-excluded');
-
-const wal = db.prepare(`SELECT category FROM transactions WHERE description='WALMART SUPERCENTER'`).get() as { category: string };
-assert.equal(wal.category, 'Groceries', 'unrelated merchant untouched');
-
-const child = db.prepare(`SELECT category FROM transactions WHERE parent_id=1`).get() as { category: string };
-assert.equal(child.category, 'Transfer', 'split child untouched');
-
-// Idempotent.
-assert.equal(propagateCategory(db as any, 'ALLY FINANCIAL PAYMENT', 'Transportation'), 0, 'second run is a no-op');
+// Idempotent: once they're already Transportation + un-excluded, nothing changes.
+const done = [
+  { id: 1, description: 'ALLY FINANCIAL PAYMENT', category: 'Transportation', excluded: 0 },
+  { id: 2, description: 'ALLY FINANCIAL PMT 0099', category: 'Transportation', excluded: 0 },
+];
+assert.deepEqual(planPropagation(done, 'ALLY FINANCIAL PAYMENT', 'Transportation'), [], 'second run is a no-op');
 
 console.log('propagate.test.ts: all assertions passed');

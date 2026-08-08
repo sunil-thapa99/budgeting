@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import db from '../db.js';
+import { db, uid } from '../db.js';
 import { nvidia, INSIGHTS_MODEL, CATEGORIZE_MODEL, assertKey } from '../nvidia.js';
 
 const router = Router();
@@ -8,24 +8,25 @@ const router = Router();
 router.post('/', async (req, res, next) => {
   try {
     assertKey();
+    const u = uid();
     const month: string | null = req.body?.month || null;
     const question: string | undefined = req.body?.question;
-    const mf = month ? `AND strftime('%Y-%m', date)=?` : '';
-    const mp = month ? [month] : [];
+    const mf = month ? `AND to_char(date,'YYYY-MM')=?` : '';
 
-    const totals = db.prepare(`
+    const totals = await db.get(`
       SELECT COALESCE(SUM(CASE WHEN type='income' THEN amount END),0) income,
              COALESCE(SUM(CASE WHEN type='expense' THEN amount END),0) expense
-      FROM transactions WHERE excluded=0 ${mf}`).get(...mp);
-    const byCat = db.prepare(`
-      SELECT category, ROUND(SUM(amount),2) amount FROM transactions
-      WHERE type='expense' AND excluded=0 ${mf} GROUP BY category ORDER BY amount DESC LIMIT 15`).all(...mp);
-    const budget = month ? db.prepare(`
+      FROM budget_app_transactions WHERE user_id=? AND excluded=0 ${mf}`, month ? [u, month] : [u]);
+    const byCat = await db.all(`
+      SELECT category, ROUND(SUM(amount),2) amount FROM budget_app_transactions
+      WHERE user_id=? AND type='expense' AND excluded=0 ${mf} GROUP BY category ORDER BY amount DESC LIMIT 15`,
+      month ? [u, month] : [u]);
+    const budget = month ? await db.all(`
       SELECT b.category, b.expected, ROUND(COALESCE(SUM(t.amount),0),2) actual
-      FROM budgets b LEFT JOIN transactions t
-        ON t.category=b.category AND t.type='expense' AND t.excluded=0 AND strftime('%Y-%m',t.date)=?
-      WHERE b.month=? GROUP BY b.category, b.expected
-      HAVING b.expected>0 OR actual>0 ORDER BY b.expected DESC`).all(month, month) : [];
+      FROM budget_app_budgets b LEFT JOIN budget_app_transactions t
+        ON t.category=b.category AND t.user_id=b.user_id AND t.type='expense' AND t.excluded=0 AND to_char(t.date,'YYYY-MM')=?
+      WHERE b.user_id=? AND b.month=? GROUP BY b.category, b.expected
+      HAVING b.expected>0 OR COALESCE(SUM(t.amount),0)>0 ORDER BY b.expected DESC`, [month, u, month]) : [];
 
     const currency = typeof req.body?.currency === 'string' ? req.body.currency : 'USD';
     const data = { scope: month || 'all-time', currency, totals, byCategory: byCat, budgetVsActual: budget };

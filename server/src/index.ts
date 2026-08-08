@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import './db.js';
+import { requireAuth } from './auth.js';
 import transactions from './routes/transactions.js';
 import summary from './routes/summary.js';
 import insights from './routes/insights.js';
@@ -14,10 +15,14 @@ import accounts from './routes/accounts.js';
 import rules from './routes/rules.js';
 
 const app = express();
-app.use(cors());
+// CORS lockdown: in production set CORS_ORIGINS to a comma-separated list of allowed
+// frontend origins (e.g. "https://mybudget.vercel.app"). Unset -> allow all (dev).
+const origins = (process.env.CORS_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
+app.use(cors(origins.length ? { origin: origins } : undefined));
 app.use(express.json({ limit: '12mb' })); // receipts arrive as base64
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
+app.use('/api', requireAuth); // everything below requires a valid Supabase session
 app.use('/api/transactions', transactions);
 app.use('/api/summary', summary);
 app.use('/api/insights', insights);

@@ -1,46 +1,61 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import db from '../db.js';
+import { db, uid } from '../db.js';
 import { matchRule } from '../statements.js';
 
 const router = Router();
 
-// Apply every keyword rule to existing transactions: matched rows get the rule's category and
-// are un-excluded (a user category means it's real spending/income, not a transfer). Returns the
-// number of rows changed. Pure over `database` so it's testable. Skips split children.
-export function reapplyRules(database: typeof db): number {
-  const rules = database.prepare('SELECT keyword, category FROM category_rules').all() as { keyword: string; category: string }[];
-  if (!rules.length) return 0;
-  const rows = database.prepare('SELECT id, description, category, excluded FROM transactions WHERE parent_id IS NULL').all() as
-    { id: number; description: string; category: string; excluded: number }[];
-  const upd = database.prepare('UPDATE transactions SET category=?, excluded=0 WHERE id=?');
-  let changed = 0;
+type RuleRow = { id: number; description: string; category: string; excluded: number };
+
+// Pure core: given transactions + keyword rules, which rows should change (and to what).
+// A matched row gets the rule's category and is un-excluded. Skips no-op rows. Testable.
+export function planReapply(
+  rows: RuleRow[],
+  rules: { keyword: string; category: string }[],
+): { id: number; category: string }[] {
+  const out: { id: number; category: string }[] = [];
   for (const r of rows) {
     const c = matchRule(r.description, rules);
-    if (c && (c !== r.category || r.excluded !== 0)) { upd.run(c, r.id); changed++; }
+    if (c && (c !== r.category || r.excluded !== 0)) out.push({ id: r.id, category: c });
   }
-  return changed;
+  return out;
+}
+
+// Apply every keyword rule to existing (non-child) transactions. Returns rows changed.
+export async function reapplyRules(): Promise<number> {
+  const rules = await db.all<{ keyword: string; category: string }>('SELECT keyword, category FROM budget_app_category_rules WHERE user_id=?', [uid()]);
+  if (!rules.length) return 0;
+  const rows = await db.all<RuleRow>('SELECT id, description, category, excluded FROM budget_app_transactions WHERE user_id=? AND parent_id IS NULL', [uid()]);
+  const changes = planReapply(rows, rules);
+  for (const c of changes) await db.run('UPDATE budget_app_transactions SET category=?, excluded=0 WHERE id=? AND user_id=?', [c.category, c.id, uid()]);
+  return changes.length;
 }
 
 // GET /api/rules -> keyword -> category rules (applied first during import categorization).
-router.get('/', (_req, res) => {
-  res.json(db.prepare('SELECT keyword, category FROM category_rules ORDER BY keyword').all());
+router.get('/', async (_req, res, next) => {
+  try {
+    res.json(await db.all('SELECT keyword, category FROM budget_app_category_rules WHERE user_id=? ORDER BY keyword', [uid()]));
+  } catch (err) { next(err); }
 });
 
-router.post('/', (req, res) => {
-  const { keyword, category } = z.object({
-    keyword: z.string().trim().min(2, 'keyword needs ≥2 characters'),
-    category: z.string().trim().min(1),
-  }).parse(req.body);
-  db.prepare(`INSERT INTO category_rules (keyword, category, updated_at) VALUES (?,?,datetime('now'))
-              ON CONFLICT(keyword) DO UPDATE SET category=excluded.category, updated_at=excluded.updated_at`)
-    .run(keyword.toUpperCase(), category);
-  res.status(201).json({ ok: true, applied: reapplyRules(db) }); // fix existing matching transactions too
+router.post('/', async (req, res, next) => {
+  try {
+    const { keyword, category } = z.object({
+      keyword: z.string().trim().min(2, 'keyword needs ≥2 characters'),
+      category: z.string().trim().min(1),
+    }).parse(req.body);
+    await db.run(`INSERT INTO budget_app_category_rules (user_id, keyword, category, updated_at) VALUES (?,?,?,now())
+                ON CONFLICT (user_id, keyword) DO UPDATE SET category=excluded.category, updated_at=excluded.updated_at`,
+      [uid(), keyword.toUpperCase(), category]);
+    res.status(201).json({ ok: true, applied: await reapplyRules() }); // fix existing matching transactions too
+  } catch (err) { next(err); }
 });
 
-router.delete('/:keyword', (req, res) => {
-  db.prepare('DELETE FROM category_rules WHERE keyword=?').run(req.params.keyword.toUpperCase());
-  res.status(204).end();
+router.delete('/:keyword', async (req, res, next) => {
+  try {
+    await db.run('DELETE FROM budget_app_category_rules WHERE keyword=? AND user_id=?', [req.params.keyword.toUpperCase(), uid()]);
+    res.status(204).end();
+  } catch (err) { next(err); }
 });
 
 export default router;

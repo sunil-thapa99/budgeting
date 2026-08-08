@@ -1,22 +1,27 @@
 # Budget — personal finance tracker
 
 Track expenses & savings, import your existing budget spreadsheet, scan receipts with a
-vision LLM, and get AI insights — all local, single-user. NVIDIA build API (OpenAI-compatible)
-powers insights and receipt scanning; your key stays on the backend.
+vision LLM, and get AI insights. Multi-user with email/password auth; each account's data is
+isolated. NVIDIA build API (OpenAI-compatible) powers insights and receipt scanning; your key
+stays on the backend.
 
-**Stack:** React + TypeScript + Vite (frontend) · Express + TypeScript + `node:sqlite` (backend) ·
-Recharts · NVIDIA build API.
+**Stack:** React + TypeScript + Vite (frontend) · Express + TypeScript (backend) ·
+Supabase (Postgres + Auth) · Recharts · NVIDIA build API.
 
 ## Setup
 
+1. **Supabase** — create a project and run the SQL in [`DB/`](DB/) (see [DB/README.md](DB/README.md)
+   for the exact steps and where to copy each key).
+2. **Env** — fill in both from the examples:
+
 ```bash
 npm run install:all          # installs root + server + web
-cp server/.env.example server/.env
-# edit server/.env -> paste your NVIDIA_API_KEY (from https://build.nvidia.com)
-npm run dev                  # server on :5174, web on :5173
+cp server/.env.example server/.env   # NVIDIA_API_KEY + DATABASE_URL + SUPABASE_* keys
+cp web/.env.example web/.env         # VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY
+npm run dev                          # server on :5174, web on :5173
 ```
 
-Open http://localhost:5173.
+Open http://localhost:5173, register an account, and sign in.
 
 ## Using it
 
@@ -86,11 +91,29 @@ display is a single constant (`USD`) in `web/src/util.ts` — change it for CAD/
 | `INSIGHTS_MODEL` | `meta/llama-3.3-70b-instruct` | any NVIDIA chat model |
 | `VISION_MODEL` | `meta/llama-3.2-90b-vision-instruct` | any NVIDIA vision model |
 | `PORT` | `5174` | backend port (Vite proxies `/api` here) |
-| `DB_PATH` | `./budget.db` | SQLite file |
+| `DATABASE_URL` | — | Supabase Postgres connection string (pooler URI) |
+| `SUPABASE_URL` | — | Supabase project URL |
+| `SUPABASE_SERVICE_ROLE_KEY` | — | **secret**, backend only — validates sessions |
+
+Frontend (`web/.env`): `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, and optional
+`VITE_API_URL` (backend origin in production; unset in dev).
+
+## Deploy (use it on your phone)
+
+The frontend is a responsive SPA — open it on your phone and **Add to Home Screen**.
+
+- **Frontend** → Vercel / Netlify / Cloudflare Pages (free). Build `web`, set the two
+  `VITE_SUPABASE_*` vars + `VITE_API_URL` pointing at the backend.
+- **Backend** → a host that runs a container with a persistent process and lets you install
+  `pdftotext` (Render / Fly.io / Railway). Set the server env vars there. Serverless (Vercel
+  functions) can't run the `pdftotext` binary, so Capital One PDF import would break there.
+- **Data + auth** → Supabase (persistent, isolated per user via RLS). Nothing to host yourself.
+- Lock CORS to your frontend origin before going public.
 
 ## Notes / deliberate simplifications
 
 - Currency is a single constant (`USD`) in `web/src/util.ts` — change there.
 - Excel dates: the sheet mixed `dd/mm` and `mm/dd`; import buckets each row into its tab's
   month (keeping an exact day only when unambiguous). Correct for monthly budgeting.
-- No auth — it's a local single-user app. Don't expose the backend publicly as-is.
+- Auth is Supabase email/password; every API route requires a valid session and all data is
+  scoped per user (app-level `user_id` filters + Postgres RLS as defense-in-depth).
