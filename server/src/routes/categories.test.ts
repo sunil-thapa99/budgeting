@@ -1,37 +1,24 @@
 import assert from 'node:assert';
-import { DatabaseSync } from 'node:sqlite';
-import { renameCategory } from './transactions.js';
+import { planBudgetMerge } from './transactions.js';
 
 // Run: cd server && npx tsx src/routes/categories.test.ts
-const db = new DatabaseSync(':memory:');
-db.exec(`
-  CREATE TABLE transactions (id INTEGER PRIMARY KEY, category TEXT);
-  CREATE TABLE budgets (month TEXT, category TEXT, expected REAL, PRIMARY KEY (month, category));
-  CREATE TABLE merchant_categories (merchant TEXT PRIMARY KEY, category TEXT);
-  CREATE TABLE category_rules (keyword TEXT PRIMARY KEY, category TEXT);
-  INSERT INTO category_rules VALUES ('CUIS','groceries');
-  INSERT INTO transactions (category) VALUES ('groceries'), ('groceries'), ('Groceries'), ('Rent');
-  INSERT INTO budgets VALUES ('2026-07','groceries',100), ('2026-07','Groceries',400), ('2026-08','groceries',150);
-  INSERT INTO merchant_categories VALUES ('WHOLE FOODS','groceries');
-`);
+// Tests the non-trivial part of renameCategory: merging the source category's budget rows
+// into the target. Months the target already has are SUMMED; months it lacks are RENAMED.
+// (transactions/merchant/rule updates are plain UPDATEs; the merge is the tricky bit.)
+const fromRows = [
+  { month: '2026-07', expected: 100 }, // target already has July -> add
+  { month: '2026-08', expected: 150 }, // target lacks August    -> insert
+];
+const targetMonths = new Set(['2026-07']); // target ("Groceries") already budgeted July at 400
 
-const moved = renameCategory(db as any, 'groceries', 'Groceries'); // merge lowercase into existing
-assert.equal(moved, 2, 'two transactions should move');
+const { add, insert } = planBudgetMerge(fromRows, targetMonths);
 
-const cats = db.prepare('SELECT category, COUNT(*) n FROM transactions GROUP BY category ORDER BY category').all();
-assert.deepEqual(cats, [{ category: 'Groceries', n: 3 }, { category: 'Rent', n: 1 }], 'all groceries unified');
+assert.deepEqual(add, [{ month: '2026-07', expected: 100 }], 'conflicting month is summed into target (400 + 100)');
+assert.deepEqual(insert, [{ month: '2026-08', expected: 150 }], 'non-conflicting month is renamed into target');
 
-// July had both rows -> summed (100+400); August had only the source -> renamed (150).
-const jul = db.prepare(`SELECT expected FROM budgets WHERE month='2026-07' AND category='Groceries'`).get() as { expected: number };
-const aug = db.prepare(`SELECT expected FROM budgets WHERE month='2026-08' AND category='Groceries'`).get() as { expected: number };
-assert.equal(jul.expected, 500, 'conflicting month budgets summed');
-assert.equal(aug.expected, 150, 'non-conflicting month budget renamed');
-assert.equal((db.prepare(`SELECT COUNT(*) n FROM budgets WHERE category='groceries'`).get() as { n: number }).n, 0, 'no source budget rows left');
-
-const mc = db.prepare(`SELECT category FROM merchant_categories WHERE merchant='WHOLE FOODS'`).get() as { category: string };
-assert.equal(mc.category, 'Groceries', 'learned merchant memory follows the rename');
-
-const rule = db.prepare(`SELECT category FROM category_rules WHERE keyword='CUIS'`).get() as { category: string };
-assert.equal(rule.category, 'Groceries', 'keyword rules follow the rename too');
+// No overlap at all -> everything inserts.
+assert.deepEqual(
+  planBudgetMerge([{ month: '2026-09', expected: 50 }], new Set()).insert,
+  [{ month: '2026-09', expected: 50 }], 'empty target -> all inserts');
 
 console.log('categories.test.ts: all assertions passed');

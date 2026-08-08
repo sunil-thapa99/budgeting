@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import * as XLSX from 'xlsx';
-import db from '../db.js';
+import { tx, uid } from '../db.js';
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
@@ -146,39 +146,38 @@ router.post('/preview', upload.single('file'), (req, res) => {
 });
 
 // POST /api/import  (multipart: file, sheets=JSON array) -> commit
-router.post('/', upload.single('file'), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'Upload an .xlsx file as "file".' });
-  let only: string[] | undefined;
-  try { only = req.body.sheets ? JSON.parse(req.body.sheets) : undefined; } catch { only = undefined; }
-  const parsed = parseWorkbook(req.file.buffer, only);
-
-  // idempotent: importing replaces all prior import-sourced data
-  const tx = db.prepare('DELETE FROM transactions WHERE source=?');
-  const insTx = db.prepare(
-    `INSERT INTO transactions (date,type,amount,category,description,method,source) VALUES (?,?,?,?,?,?,?)`
-  );
-  const clearBudgets = db.prepare('DELETE FROM budgets');
-  const insBudget = db.prepare(
-    `INSERT INTO budgets (month,category,expected) VALUES (?,?,?)
-     ON CONFLICT(month,category) DO UPDATE SET expected=excluded.expected`
-  );
-
-  db.exec('BEGIN');
+router.post('/', upload.single('file'), async (req, res, next) => {
   try {
-    tx.run('import');
-    clearBudgets.run();
-    let nTx = 0, nBud = 0;
-    for (const p of parsed) {
-      for (const e of p.expenses) { insTx.run(e.date, 'expense', e.amount, e.category, e.description, e.method, 'import'); nTx++; }
-      for (const inc of p.income) { insTx.run(inc.date, 'income', inc.amount, 'Income', inc.description, '', 'import'); nTx++; }
-      for (const b of p.budgets) { insBudget.run(p.month, b.category, b.expected); nBud++; }
-    }
-    db.exec('COMMIT');
-    res.json({ sheets: parsed.map(p => p.sheet), transactions: nTx, budgets: nBud });
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
+    if (!req.file) return res.status(400).json({ error: 'Upload an .xlsx file as "file".' });
+    let only: string[] | undefined;
+    try { only = req.body.sheets ? JSON.parse(req.body.sheets) : undefined; } catch { only = undefined; }
+    const parsed = parseWorkbook(req.file.buffer, only);
+    const u = uid();
+
+    const result = await tx(async (conn) => {
+      // idempotent: importing replaces all prior import-sourced data
+      await conn.run('DELETE FROM budget_app_transactions WHERE source=? AND user_id=?', ['import', u]);
+      await conn.run('DELETE FROM budget_app_budgets WHERE user_id=?', [u]);
+      let nTx = 0, nBud = 0;
+      for (const p of parsed) {
+        for (const e of p.expenses) {
+          await conn.run(`INSERT INTO budget_app_transactions (user_id,date,type,amount,category,description,method,source) VALUES (?,?,?,?,?,?,?,?)`,
+            [u, e.date, 'expense', e.amount, e.category, e.description, e.method, 'import']); nTx++;
+        }
+        for (const inc of p.income) {
+          await conn.run(`INSERT INTO budget_app_transactions (user_id,date,type,amount,category,description,method,source) VALUES (?,?,?,?,?,?,?,?)`,
+            [u, inc.date, 'income', inc.amount, 'Income', inc.description, '', 'import']); nTx++;
+        }
+        for (const b of p.budgets) {
+          await conn.run(`INSERT INTO budget_app_budgets (user_id,month,category,expected) VALUES (?,?,?,?)
+            ON CONFLICT (user_id,month,category) DO UPDATE SET expected=excluded.expected`,
+            [u, p.month, b.category, b.expected]); nBud++;
+        }
+      }
+      return { sheets: parsed.map(p => p.sheet), transactions: nTx, budgets: nBud };
+    });
+    res.json(result);
+  } catch (err) { next(err); }
 });
 
 export default router;

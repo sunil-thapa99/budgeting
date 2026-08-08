@@ -135,3 +135,9 @@ td.num, th.num { text-align: right; }
 .field label { font-size: 12px; font-weight: 600; color: var(--text-secondary); }
 .spin { width:16px;height:16px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;display:inline-block;animation:spin .7s linear infinite;vertical-align:-3px }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- auth screen ---------- */
+.auth-wrap { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
+.auth-card { width: 100%; max-width: 380px; }
+.auth-card h3 { font-size: 20px; margin: 12px 0 2px; }
+.auth-card a { color: var(--accent); text-decoration: none; }

@@ -5,7 +5,9 @@ import { parseStatement, commitStatement, allowedCategories, type ProposedTx } f
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024, files: 12 } });
 
-router.get('/categories', (_req, res) => res.json(allowedCategories()));
+router.get('/categories', async (_req, res, next) => {
+  try { res.json(await allowedCategories()); } catch (err) { next(err); }
+});
 
 // POST /api/statements/preview  (multipart: files[]) -> proposed transactions per file, NO writes
 router.post('/preview', upload.array('files'), async (req, res, next) => {
@@ -17,16 +19,16 @@ router.post('/preview', upload.array('files'), async (req, res, next) => {
       const rows = await parseStatement({ name: f.originalname, buffer: f.buffer });
       out.push({ file: f.originalname, account: rows[0]?.account ?? '', rows });
     }
-    res.json({ files: out, categories: allowedCategories() });
+    res.json({ files: out, categories: await allowedCategories() });
   } catch (err) { next(err); }
 });
 
 // POST /api/statements/commit  { rows: ProposedTx[] } -> insert (skips existing ext_id)
-router.post('/commit', (req, res, next) => {
+router.post('/commit', async (req, res, next) => {
   try {
     const rows = (req.body?.rows as ProposedTx[]) || [];
     if (!Array.isArray(rows) || !rows.length) return res.status(400).json({ error: 'No rows to import.' });
-    res.json(commitStatement(rows));
+    res.json(await commitStatement(rows));
   } catch (err) { next(err); }
 });
 

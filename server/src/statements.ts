@@ -4,8 +4,10 @@ import { createHash } from 'node:crypto';
 import { writeFile, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import db from './db.js';
+import { db, tx, uid } from './db.js';
 import { nvidia, INSIGHTS_MODEL, CATEGORIZE_MODEL, assertKey } from './nvidia.js';
+
+type Handle = typeof db;
 
 const exec = promisify(execFile);
 
@@ -365,8 +367,8 @@ function ruleClassify(r: RawRow): { excluded: boolean; type: 'expense'|'income';
 
 // ---------- categorization via LLM (batched, unique descriptions) ---------
 
-export function allowedCategories(): string[] {
-  const fromBudgets = (db.prepare(`SELECT DISTINCT category FROM budgets ORDER BY category`).all() as {category:string}[])
+export async function allowedCategories(): Promise<string[]> {
+  const fromBudgets = (await db.all<{category:string}>(`SELECT DISTINCT category FROM budget_app_budgets WHERE user_id=? ORDER BY category`, [uid()]))
     .map(r => r.category).filter(c => c && c.toLowerCase() !== 'total');
   const base = ['Groceries','Dining','Coffee','Transportation','Gas for Car','Shopping','Rent','Insurance',
     'Internet','Cell Phone Bill','Subscriptions','Utilities','Health','Entertainment','Education','Travel','Fees','Prop Trading','Miscellaneous'];
@@ -403,27 +405,30 @@ export function normalizeMerchant(desc: string): string {
 }
 // Movement labels are decided by rules/direction each time, not by merchant — don't memorize them.
 const MOVEMENT = new Set(['Transfer', 'Income', 'Reimbursement', 'Investment']);
-export function learnMerchant(desc: string, category: string) {
+export async function learnMerchant(desc: string, category: string, conn: Handle = db) {
   const key = normalizeMerchant(desc);
   if (!key || !category || MOVEMENT.has(category)) return;
-  db.prepare(`INSERT INTO merchant_categories (merchant, category, updated_at) VALUES (?, ?, datetime('now'))
-              ON CONFLICT(merchant) DO UPDATE SET category=excluded.category, updated_at=excluded.updated_at`)
-    .run(key, category);
+  await conn.run(`INSERT INTO budget_app_merchant_categories (user_id, merchant, category, updated_at) VALUES (?, ?, ?, now())
+              ON CONFLICT (user_id, merchant) DO UPDATE SET category=excluded.category, updated_at=excluded.updated_at`,
+    [uid(), key, category]);
+}
+
+// Pure core: which of `rows` should follow a correction to `category` (same merchant key,
+// and either a different category or currently excluded). Kept pure so it's testable.
+type CatRow = { id: number; description: string; category: string; excluded: number };
+export function planPropagation(rows: CatRow[], desc: string, category: string): number[] {
+  const key = normalizeMerchant(desc);
+  if (!key || !category) return [];
+  return rows.filter(r => normalizeMerchant(r.description) === key && (r.category !== category || r.excluded !== 0))
+    .map(r => r.id);
 }
 // Apply a category to every existing transaction with a similar description (same merchant key)
 // and un-exclude them — a category you chose means it's real, not a transfer. Returns rows changed.
-export function propagateCategory(database: typeof db, desc: string, category: string): number {
-  const key = normalizeMerchant(desc);
-  if (!key || !category) return 0;
-  const rows = database.prepare('SELECT id, description, category, excluded FROM transactions WHERE parent_id IS NULL').all() as
-    { id: number; description: string; category: string; excluded: number }[];
-  const upd = database.prepare('UPDATE transactions SET category=?, excluded=0 WHERE id=?');
-  let changed = 0;
-  for (const r of rows) {
-    if (normalizeMerchant(r.description) !== key) continue;
-    if (r.category !== category || r.excluded !== 0) { upd.run(category, r.id); changed++; }
-  }
-  return changed;
+export async function propagateCategory(conn: Handle, desc: string, category: string): Promise<number> {
+  const rows = await conn.all<CatRow>('SELECT id, description, category, excluded FROM budget_app_transactions WHERE user_id=? AND parent_id IS NULL', [uid()]);
+  const ids = planPropagation(rows, desc, category);
+  for (const id of ids) await conn.run('UPDATE budget_app_transactions SET category=?, excluded=0 WHERE id=? AND user_id=?', [category, id, uid()]);
+  return ids.length;
 }
 
 // Token-prefix keyword rules. A rule matches if any word in the description starts with
@@ -436,13 +441,17 @@ export function matchRule(desc: string, rules: { keyword: string; category: stri
   }
   return best?.category ?? null;
 }
-function lookupRules(): { keyword: string; category: string }[] {
-  return db.prepare('SELECT keyword, category FROM category_rules').all() as { keyword: string; category: string }[];
+async function lookupRules(): Promise<{ keyword: string; category: string }[]> {
+  return db.all('SELECT keyword, category FROM budget_app_category_rules WHERE user_id=?', [uid()]);
 }
-function lookupMerchants(descs: string[]): Record<string, string> {
-  const stmt = db.prepare(`SELECT category FROM merchant_categories WHERE merchant=?`);
+async function lookupMerchants(descs: string[]): Promise<Record<string, string>> {
+  const keys = [...new Set(descs.map(normalizeMerchant).filter(Boolean))];
+  if (!keys.length) return {};
+  const rows = await db.all<{ merchant: string; category: string }>(
+    'SELECT merchant, category FROM budget_app_merchant_categories WHERE user_id=? AND merchant = ANY(?)', [uid(), keys]);
+  const byKey = new Map(rows.map(r => [r.merchant, r.category] as const));
   const out: Record<string, string> = {};
-  for (const d of descs) { const row = stmt.get(normalizeMerchant(d)) as { category: string } | undefined; if (row) out[d] = row.category; }
+  for (const d of descs) { const c = byKey.get(normalizeMerchant(d)); if (c) out[d] = c; }
   return out;
 }
 
@@ -457,7 +466,7 @@ async function categorize(items: CatItem[], cats: string[]): Promise<Record<stri
   const result: Record<string, string> = {};
   // (user keyword rules are applied upstream in parseStatement, ahead of the movement guard)
   // 1) learned merchant memory (consistent + improves from past edits)
-  const mem = lookupMerchants(list.map(i => i.desc));
+  const mem = await lookupMerchants(list.map(i => i.desc));
   // 2) local merchant dictionary (spending, money-out only)
   const remaining: CatItem[] = [];
   for (const it of list) {
@@ -531,13 +540,13 @@ export async function parseStatement(file: { name: string; buffer: Buffer }): Pr
 
   // occurrence index so legitimately-identical rows keep distinct ext_ids, but re-imports match.
   const occ = new Map<string, number>();
-  const cats = allowedCategories();
+  const cats = await allowedCategories();
 
   // Your corrections are the source of truth. A keyword rule or a previously-learned
   // category (from editing a record) wins over the built-in movement guard, so a fix you
   // made once sticks on every future import instead of being re-guessed.
-  const rules = lookupRules();
-  const mem = lookupMerchants(raw.map(r => r.description));
+  const rules = await lookupRules();
+  const mem = await lookupMerchants(raw.map(r => r.description));
   const pre = raw.map(r => {
     const forced = matchRule(r.description, rules) || mem[r.description] || null;
     return { r, forced, rule: forced ? null : ruleClassify(r) };
@@ -550,8 +559,10 @@ export async function parseStatement(file: { name: string; buffer: Buffer }): Pr
   const catMap = await categorize(items, cats);
   console.error(`[stmt] categorized in ${Date.now() - t0}ms`);
 
-  const existing = db.prepare(`SELECT ext_id FROM transactions WHERE ext_id IS NOT NULL`).all() as {ext_id:string}[];
+  const existing = await db.all<{ext_id:string}>(`SELECT ext_id FROM budget_app_transactions WHERE user_id=? AND ext_id IS NOT NULL`, [uid()]);
   const known = new Set(existing.map(e => e.ext_id));
+  // Preload non-excluded (amount,date) once for the fuzzy cross-source dedupe (avoids a query per row).
+  const dupCandidates = await db.all<{amount:number;date:string}>(`SELECT amount, date FROM budget_app_transactions WHERE user_id=? AND excluded=0`, [uid()]);
 
   const proposed: ProposedTx[] = pre.map(({ r, forced, rule }) => {
     const key = `${r.account}|${r.date}|${r.amount.toFixed(2)}|${normDesc(r.description)}`;
@@ -574,37 +585,33 @@ export async function parseStatement(file: { name: string; buffer: Buffer }): Pr
 
     const p: ProposedTx = { ...r, extId, type, category, excluded, reason };
     if (known.has(extId)) p.duplicate = 'imported';
-    else if (fuzzyDup(r)) p.duplicate = 'possible';
+    else if (fuzzyDup(r, dupCandidates)) p.duplicate = 'possible';
     return p;
   });
 
   return proposed;
 }
 
-// fuzzy cross-source match (e.g. a scanned receipt already in the DB)
-function fuzzyDup(r: RawRow): boolean {
-  const row = db.prepare(`
-    SELECT 1 FROM transactions
-    WHERE excluded=0 AND ABS(amount - ?) < 0.005
-      AND ABS(julianday(date) - julianday(?)) <= 3
-    LIMIT 1`).get(r.amount, r.date);
-  return !!row;
+const DAY_MS = 86400000;
+// fuzzy cross-source match (e.g. a scanned receipt already in the DB): same amount, ±3 days.
+function fuzzyDup(r: RawRow, candidates: { amount: number; date: string }[]): boolean {
+  return candidates.some(c =>
+    Math.abs(c.amount - r.amount) < 0.005 &&
+    Math.abs(Date.parse(c.date) - Date.parse(r.date)) <= 3 * DAY_MS);
 }
 
-export function commitStatement(rows: ProposedTx[]): { inserted: number; skipped: number } {
-  const ins = db.prepare(`
-    INSERT OR IGNORE INTO transactions (date,type,amount,category,description,method,source,account,ext_id,excluded)
-    VALUES (?,?,?,?,?,?,?,?,?,?)`);
-  let inserted = 0, skipped = 0;
-  db.exec('BEGIN');
-  try {
+export async function commitStatement(rows: ProposedTx[]): Promise<{ inserted: number; skipped: number }> {
+  return tx(async (conn) => {
+    let inserted = 0, skipped = 0;
     for (const r of rows) {
-      const res = ins.run(r.date, r.type, r.amount, r.category, r.description, '', 'statement',
-        r.account, r.extId, r.excluded ? 1 : 0);
+      const res = await conn.run(`
+        INSERT INTO budget_app_transactions (user_id,date,type,amount,category,description,method,source,account,ext_id,excluded)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT (user_id, ext_id) WHERE ext_id IS NOT NULL DO NOTHING`,
+        [uid(), r.date, r.type, r.amount, r.category, r.description, '', 'statement', r.account, r.extId, r.excluded ? 1 : 0]);
       if (res.changes > 0) inserted++; else skipped++;
-      learnMerchant(r.description, r.category); // remember the (possibly user-edited) category
+      await learnMerchant(r.description, r.category, conn); // remember the (possibly user-edited) category
     }
-    db.exec('COMMIT');
-  } catch (e) { db.exec('ROLLBACK'); throw e; }
-  return { inserted, skipped };
+    return { inserted, skipped };
+  });
 }

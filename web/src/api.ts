@@ -49,9 +49,17 @@ export type ReceiptResult = {
 };
 
 import { getCurrency } from './util';
+import { supabase } from './supabase';
+
+// In dev, Vite proxies /api -> :5174. In production set VITE_API_URL to the backend origin.
+const BASE = import.meta.env.VITE_API_URL ?? '';
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, init);
+  const { data } = await supabase.auth.getSession();
+  const headers = new Headers(init?.headers);
+  if (data.session?.access_token) headers.set('Authorization', `Bearer ${data.session.access_token}`);
+  const res = await fetch(BASE + url, { ...init, headers });
+  if (res.status === 401) { await supabase.auth.signOut(); throw new Error('Session expired — please sign in again.'); }
   if (!res.ok) {
     let msg = res.statusText;
     try { const j = await res.json(); msg = typeof j.error === 'string' ? j.error : JSON.stringify(j.error); } catch {}

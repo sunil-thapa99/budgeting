@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react';
+import type { Session } from '@supabase/supabase-js';
 import { useTheme } from './theme';
 import { api } from './api';
+import { supabase } from './supabase';
 import { monthLabel, CURRENCIES, getCurrency, setCurrency } from './util';
+import Auth from './Auth';
 import Dashboard from './pages/Dashboard';
 import Transactions from './pages/Transactions';
 import ImportPage from './pages/Import';
@@ -13,6 +16,8 @@ type View = 'dashboard' | 'transactions' | 'recurring' | 'accounts' | 'statement
 
 export default function App() {
   const { mode, toggle } = useTheme();
+  const [session, setSession] = useState<Session | null>(null);
+  const [authReady, setAuthReady] = useState(false);
   const [view, setView] = useState<View>('dashboard');
   const [months, setMonths] = useState<string[]>([]);
   const [month, setMonth] = useState<string | null>(null);
@@ -20,12 +25,22 @@ export default function App() {
   const [cur, setCur] = useState(getCurrency()); // currency selection (drives re-render)
 
   useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => { setSession(data.session); setAuthReady(true); });
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!session) return;
     api.summary().then(s => {
       const ms = s.months.filter(Boolean);
       setMonths(ms);
       setMonth(prev => prev ?? ms[0] ?? null);
     }).catch(() => {});
-  }, [refresh]);
+  }, [refresh, session]);
+
+  if (!authReady) return null;              // avoid a flash of the login screen on reload
+  if (!session) return <Auth />;
 
   const bump = () => setRefresh(r => r + 1);
 
@@ -53,6 +68,7 @@ export default function App() {
           {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
         </select>
         <button className="btn icon ghost" title="Toggle theme" onClick={toggle}>{mode === 'dark' ? '☀' : '☾'}</button>
+        <button className="btn ghost" title={`Signed in as ${session.user.email ?? ''}`} onClick={() => supabase.auth.signOut()}>Sign out</button>
       </header>
 
       <main className="main">
