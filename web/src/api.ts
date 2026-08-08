@@ -54,11 +54,21 @@ import { supabase } from './supabase';
 // In dev, Vite proxies /api -> :5174. In production set VITE_API_URL to the backend origin.
 const BASE = import.meta.env.VITE_API_URL ?? '';
 
+async function send(url: string, init: RequestInit | undefined, token?: string) {
+  const headers = new Headers(init?.headers);
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  return fetch(BASE + url, { ...init, headers });
+}
+
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const { data } = await supabase.auth.getSession();
-  const headers = new Headers(init?.headers);
-  if (data.session?.access_token) headers.set('Authorization', `Bearer ${data.session.access_token}`);
-  const res = await fetch(BASE + url, { ...init, headers });
+  let res = await send(url, init, data.session?.access_token);
+  // Access token likely expired (idle tab). Refresh once and retry before giving up. init.body is a
+  // JSON string or FormData here, both re-sendable — so the same init can be replayed.
+  if (res.status === 401) {
+    const { data: r } = await supabase.auth.refreshSession();
+    if (r.session?.access_token) res = await send(url, init, r.session.access_token);
+  }
   if (res.status === 401) { await supabase.auth.signOut(); throw new Error('Session expired — please sign in again.'); }
   if (!res.ok) {
     let msg = res.statusText;
