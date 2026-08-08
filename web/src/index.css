@@ -119,6 +119,12 @@ td.num, th.num { text-align: right; }
 .pill { display:inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600;
         background: var(--surface-2); color: var(--text-secondary); border: 1px solid var(--border); }
 .pill.income { color: var(--good); border-color: color-mix(in srgb, var(--good) 40%, var(--border)); }
+td.amt { font-weight: 600; }
+td.amt.income { color: var(--good); }
+
+/* ---------- toolbar (page header + actions) ---------- */
+.toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.toolbar .actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
 /* ---------- misc ---------- */
 .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
@@ -141,3 +147,37 @@ td.num, th.num { text-align: right; }
 .auth-card { width: 100%; max-width: 380px; }
 .auth-card h3 { font-size: 20px; margin: 12px 0 2px; }
 .auth-card a { color: var(--accent); text-decoration: none; }
+
+/* ---------- responsive ---------- */
+.menu-toggle { display: none; }  /* hamburger — mobile only */
+
+/* Topbar: below the desktop width, nav collapses behind a hamburger drawer. */
+@media (max-width: 860px) {
+  .topbar { height: auto; min-height: 56px; padding: 10px 14px; gap: 8px; flex-wrap: wrap; }
+  .brand { margin-right: auto; }
+  .menu-toggle { display: inline-flex; order: 2; }
+  .spacer { display: none; }
+  .nav { display: none; order: 3; width: 100%; flex-direction: column; gap: 4px; }
+  .nav.open { display: flex; }
+  .nav button { width: 100%; text-align: left; padding: 12px 14px; font-size: 15px; }
+}
+
+@media (max-width: 640px) {
+  .main { padding: 16px 12px; }
+  .toolbar .actions { width: 100%; }
+  /* Let search + category filter share a row and fill it; keep buttons wrapping below. */
+  .toolbar .actions .control { flex: 1 1 140px; min-width: 0; }
+
+  /* Transactions table -> stacked cards, one transaction per card. */
+  table, tbody, tr, td { display: block; width: 100%; }
+  thead { display: none; }
+  tbody tr { padding: 12px 14px; border-bottom: 1px solid var(--border); }
+  tbody tr:last-child { border-bottom: 0; }
+  td { border: 0; padding: 3px 0; display: flex; justify-content: space-between; gap: 12px; text-align: right; }
+  td::before { content: attr(data-label); color: var(--text-muted); font-size: 12px;
+               font-weight: 600; text-transform: uppercase; letter-spacing: .03em; text-align: left; }
+  td.num, td.amt { text-align: right; }
+  /* action buttons row (no label) */
+  td:last-child { justify-content: flex-end; padding-top: 8px; }
+  td:last-child::before { display: none; }
+}

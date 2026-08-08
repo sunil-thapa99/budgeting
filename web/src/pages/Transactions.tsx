@@ -25,7 +25,11 @@ export default function Transactions({ month, onChange }: { month: string | null
   const loadCats = () => api.categories().then(setCats).catch(() => {});
   const loadRows = () => {
     const query: Record<string, string> = { limit: String(PAGE), offset: String(page * PAGE) };
-    if (month) { query.from = `${month}-01`; query.to = `${month}-31`; }
+    if (month) {
+      const [y, m] = month.split('-').map(Number);
+      query.from = `${month}-01`;
+      query.to = `${month}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`; // real last day (28-31)
+    }
     if (q.trim()) query.q = q.trim();
     if (cat) query.category = cat;
     api.transactions(query).then(r => { setRows(r.rows); setTotal(r.total); }).catch(e => setErr(e.message));
@@ -57,9 +61,9 @@ export default function Transactions({ month, onChange }: { month: string | null
 
   return (
     <div className="stack">
-      <div className="row" style={{ justifyContent: 'space-between' }}>
+      <div className="toolbar">
         <div className="section-title" style={{ margin: 0 }}>Transactions {month ? `· ${month}` : ''}</div>
-        <div className="row">
+        <div className="actions">
           <input className="control" style={{ width: 200 }} placeholder="Search…" value={q}
                  onChange={e => setQ(e.target.value)} />
           <select className="control" value={cat} onChange={e => setCat(e.target.value)} title="Filter by category">
@@ -83,13 +87,13 @@ export default function Transactions({ month, onChange }: { month: string | null
           <tbody>
             {rows.map(r => (
               <tr key={r.id}>
-                <td className="muted">{r.date}</td>
-                <td>{r.description || <span className="muted">—</span>}</td>
-                <td>{r.split_count
+                <td className="muted" data-label="Date">{r.date}</td>
+                <td data-label="Description">{r.description || <span className="muted">—</span>}</td>
+                <td data-label="Category">{r.split_count
                   ? <span className="pill" title="Split across categories" style={{ cursor: 'pointer' }} onClick={() => setSplitting(r)}>Split · {r.split_count}</span>
                   : <span className="pill">{r.category}</span>}</td>
-                <td><span className={`pill ${r.type === 'income' ? 'income' : ''}`}>{r.type}</span></td>
-                <td className="num" style={{ fontWeight: 600 }}>{r.type === 'income' ? '+' : '−'}{money(r.amount)}</td>
+                <td data-label="Type"><span className={`pill ${r.type === 'income' ? 'income' : ''}`}>{r.type}</span></td>
+                <td className={`num amt ${r.type === 'income' ? 'income' : ''}`} data-label="Amount">{r.type === 'income' ? '+' : '−'}{money(r.amount)}</td>
                 <td className="num">
                   <button className="btn ghost icon" title="Split across categories" onClick={() => setSplitting(r)}>✂</button>
                   <button className="btn ghost icon" title="Edit" onClick={() => setEditing({ id: r.id, data: r })}>✎</button>
