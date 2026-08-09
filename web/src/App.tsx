@@ -5,6 +5,7 @@ import { api } from './api';
 import { supabase } from './supabase';
 import { monthLabel, CURRENCIES, getCurrency, setCurrency } from './util';
 import Auth from './Auth';
+import { Toaster } from './toast';
 import Dashboard from './pages/Dashboard';
 import Transactions from './pages/Transactions';
 import ImportPage from './pages/Import';
@@ -83,6 +84,7 @@ export default function App() {
         {view === 'statements' && <Statements onDone={() => { bump(); setView('dashboard'); }} />}
         {view === 'import' && <ImportPage onDone={() => { bump(); setView('dashboard'); }} />}
       </main>
+      <Toaster />
     </div>
   );
 }

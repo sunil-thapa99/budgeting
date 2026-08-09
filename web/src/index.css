@@ -172,6 +172,29 @@ td.amt.income { color: var(--good); }
 .auth-card h3 { font-size: 20px; margin: 12px 0 2px; }
 .auth-card a { color: var(--accent); text-decoration: none; }
 
+/* ---------- toasts ---------- */
+.toaster { position: fixed; bottom: 20px; right: 20px; z-index: 100;
+  display: flex; flex-direction: column; gap: 10px; pointer-events: none; }
+.toast {
+  pointer-events: auto; cursor: pointer; display: flex; align-items: center; gap: 10px;
+  min-width: 260px; max-width: min(92vw, 380px); padding: 12px 14px;
+  background: var(--surface-1); color: var(--text-primary);
+  border: 1px solid var(--border); border-left: 3px solid var(--text-muted);
+  border-radius: var(--radius-sm); box-shadow: var(--shadow-hover);
+  font-size: 13.5px; font-weight: 500; animation: toast-in .22s var(--ease);
+}
+.toast.success { border-left-color: var(--good); }
+.toast.error   { border-left-color: var(--bad); }
+.toast.info    { border-left-color: var(--accent); }
+.toast-icon { flex: 0 0 20px; width: 20px; height: 20px; border-radius: 50%;
+  display: grid; place-items: center; font-size: 12px; font-weight: 700; color: #fff; }
+.toast.success .toast-icon { background: var(--good); }
+.toast.error   .toast-icon { background: var(--bad); }
+.toast.info    .toast-icon { background: var(--accent); }
+.toast-msg { line-height: 1.35; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(12px); } }
+@media (max-width: 640px) { .toaster { left: 12px; right: 12px; bottom: 12px; } .toast { max-width: none; } }
+
 /* ---------- responsive ---------- */
 .menu-toggle { display: none; }  /* hamburger — mobile only */
 

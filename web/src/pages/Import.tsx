@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { api } from '../api';
 import { money0, monthLabel } from '../util';
+import { toast } from '../toast';
 
 type Preview = Awaited<ReturnType<typeof api.importPreview>>;
 
@@ -19,7 +20,7 @@ export default function ImportPage({ onDone }: { onDone: () => void }) {
       const p = await api.importPreview(f);
       setPreview(p);
       setPicked(new Set(p.map(x => x.sheet)));
-    } catch (e: any) { setErr(e.message); } finally { setBusy(false); }
+    } catch (e: any) { setErr(e.message); toast.error(`Couldn't read file: ${e.message}`); } finally { setBusy(false); }
   };
 
   const commit = async () => {
@@ -28,7 +29,8 @@ export default function ImportPage({ onDone }: { onDone: () => void }) {
     try {
       const r = await api.importCommit(file, [...picked]);
       setDone({ transactions: r.transactions, budgets: r.budgets });
-    } catch (e: any) { setErr(e.message); } finally { setBusy(false); }
+      toast.success(`Imported ${r.transactions} transactions and ${r.budgets} budgets`);
+    } catch (e: any) { setErr(e.message); toast.error(`Import failed: ${e.message}`); } finally { setBusy(false); }
   };
 
   const toggle = (s: string) => setPicked(p => { const n = new Set(p); n.has(s) ? n.delete(s) : n.add(s); return n; });

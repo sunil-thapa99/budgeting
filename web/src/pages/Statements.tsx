@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { api, type ProposedTx } from '../api';
 import { money, monthLabel } from '../util';
+import { toast } from '../toast';
 
 type Item = ProposedTx & { _id: number; import: boolean };
 
@@ -25,7 +26,11 @@ export default function Statements({ onDone }: { onDone: () => void }) {
           flat.push({ ...r, _id: id++, import: r.duplicate !== 'imported' }); // skip already-imported by default
       setItems(flat);
       setCats([...res.categories, 'Income', 'Reimbursement', 'Investment', 'Transfer']);
-    } catch (e: any) { setErr(e.message.includes('NVIDIA_API_KEY') ? 'Add your NVIDIA API key to server/.env to categorize statements.' : e.message); }
+      toast.success(`Read ${flat.length} transaction${flat.length === 1 ? '' : 's'} from ${files.length} file${files.length === 1 ? '' : 's'}`);
+    } catch (e: any) {
+      const m = e.message.includes('NVIDIA_API_KEY') ? 'Add your NVIDIA API key to server/.env to categorize statements.' : e.message;
+      setErr(m); toast.error(`Upload failed: ${m}`);
+    }
     finally { setBusy(false); }
   };
 
@@ -62,7 +67,8 @@ export default function Statements({ onDone }: { onDone: () => void }) {
       const rows: ProposedTx[] = toImport.map(({ _id, import: _imp, ...r }) => r);
       const res = await api.stmtCommit(rows);
       setDone(res);
-    } catch (e: any) { setErr(e.message); } finally { setBusy(false); }
+      toast.success(`Imported ${res.inserted} transaction${res.inserted === 1 ? '' : 's'}${res.skipped ? `, skipped ${res.skipped}` : ''}`);
+    } catch (e: any) { setErr(e.message); toast.error(`Import failed: ${e.message}`); } finally { setBusy(false); }
   };
 
   if (done) return (
